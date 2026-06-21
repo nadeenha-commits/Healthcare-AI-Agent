@@ -53,7 +53,8 @@ def doctor_schedule(doctor_id, date_range=None):
 def available_slots(specialty=None, doctor_id=None, date=None):
     if doctor_id:
         doctors = [
-            doctor for doctor in list_doctors_service(specialty)
+            doctor
+            for doctor in list_doctors_service(specialty)
             if doctor["id"] == int(doctor_id)
         ]
     else:
@@ -112,6 +113,11 @@ def available_slots(specialty=None, doctor_id=None, date=None):
 
 
 def book_appointment(patient_id, doctor_id, dt_iso):
+    """
+    Creates an appointment through appointment_service.
+    Duplicate prevention should be handled inside create_appointment(),
+    because only the service has direct DB access.
+    """
     return create_appointment({
         "patient_id": patient_id,
         "doctor_id": doctor_id,
@@ -146,3 +152,10 @@ def monthly_appointments_tool(month=None, year=None):
 
 def department_load_tool():
     return department_load()
+
+
+# Aliases used by agent.py
+# These keep naming consistent and avoid import confusion.
+busiest_doctor = busiest_doctor
+monthly_appointments = monthly_appointments
+department_load = department_load

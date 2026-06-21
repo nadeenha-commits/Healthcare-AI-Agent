@@ -2,7 +2,7 @@ from backend.db.database import SessionLocal
 from backend.db.models import Appointment, Doctor
 from sqlalchemy import func
 from datetime import datetime
-
+from sqlalchemy import text
 
 def busiest_doctor(start=None, end=None):
     db = SessionLocal()
@@ -52,13 +52,14 @@ def department_load():
     db = SessionLocal()
     try:
         # count appointments per department
-        res = db.execute("""
+        res = db.execute(text("""
+
             SELECT d.name, count(a.id) as appts
             FROM departments d
             LEFT JOIN doctors doc on doc.department_id = d.id
             LEFT JOIN appointments a on a.doctor_id = doc.id
             GROUP BY d.id
-        """)
+        """))
         return [{'department': r[0], 'appointments': int(r[1])} for r in res]
     finally:
         db.close()

@@ -19,16 +19,16 @@ def list_appointments(args):
 
         return [
             {
-                "id": appointment.id,
-                "patient_id": appointment.patient_id,
-                "patient_name": appointment.patient.full_name if appointment.patient else None,
-                "doctor_id": appointment.doctor_id,
-                "doctor_name": appointment.doctor.full_name if appointment.doctor else None,
-                "specialty": appointment.doctor.specialty if appointment.doctor else None,
-                "appointment_datetime": appointment.appointment_datetime.isoformat(),
-                "status": appointment.status,
+                "id": a.id,
+                "patient_id": a.patient_id,
+                "patient_name": a.patient.full_name if a.patient else None,
+                "doctor_id": a.doctor_id,
+                "doctor_name": a.doctor.full_name if a.doctor else None,
+                "specialty": a.doctor.specialty if a.doctor else None,
+                "appointment_datetime": a.appointment_datetime.isoformat(),
+                "status": a.status,
             }
-            for appointment in appointments
+            for a in appointments
         ]
     finally:
         db.close()
@@ -57,23 +57,38 @@ def create_appointment(data):
         except Exception:
             return {"error": "invalid_datetime"}
 
-        existing = (
+        existing_same_doctor_slot = (
             db.query(Appointment)
             .filter(
                 Appointment.doctor_id == doctor_id,
                 Appointment.appointment_datetime == dt_obj,
-                Appointment.status == "scheduled",
+                Appointment.status != "cancelled",
             )
             .first()
         )
 
-        if existing:
+        if existing_same_doctor_slot:
             return {
                 "error": "slot_already_booked",
-                "existing_appointment_id": existing.id,
-                "doctor_id": doctor.id,
-                "doctor_name": doctor.full_name,
-                "appointment_datetime": existing.appointment_datetime.isoformat(),
+                "message": "This doctor already has an appointment at this time.",
+                "existing_appointment_id": existing_same_doctor_slot.id,
+            }
+
+        existing_same_patient_slot = (
+            db.query(Appointment)
+            .filter(
+                Appointment.patient_id == patient_id,
+                Appointment.appointment_datetime == dt_obj,
+                Appointment.status != "cancelled",
+            )
+            .first()
+        )
+
+        if existing_same_patient_slot:
+            return {
+                "error": "patient_already_has_appointment",
+                "message": "This patient already has an appointment at this time.",
+                "existing_appointment_id": existing_same_patient_slot.id,
             }
 
         appt = Appointment(
@@ -185,13 +200,13 @@ def get_doctor_schedule(doctor_id, start=None, end=None):
             },
             "appointments": [
                 {
-                    "id": appointment.id,
-                    "patient_id": appointment.patient_id,
-                    "patient_name": appointment.patient.full_name if appointment.patient else None,
-                    "datetime": appointment.appointment_datetime.isoformat(),
-                    "status": appointment.status,
+                    "id": a.id,
+                    "patient_id": a.patient_id,
+                    "patient_name": a.patient.full_name if a.patient else None,
+                    "datetime": a.appointment_datetime.isoformat(),
+                    "status": a.status,
                 }
-                for appointment in appointments
+                for a in appointments
             ],
         }
     finally:
@@ -210,13 +225,13 @@ def list_doctors_service(specialty=None):
 
         return [
             {
-                "id": doctor.id,
-                "full_name": doctor.full_name,
-                "specialty": doctor.specialty,
-                "department_id": doctor.department_id,
-                "department_name": doctor.department.name if doctor.department else None,
+                "id": d.id,
+                "full_name": d.full_name,
+                "specialty": d.specialty,
+                "department_id": d.department_id,
+                "department_name": d.department.name if d.department else None,
             }
-            for doctor in doctors
+            for d in doctors
         ]
     finally:
         db.close()
@@ -229,11 +244,11 @@ def list_departments():
 
         return [
             {
-                "id": department.id,
-                "name": department.name,
-                "description": department.description,
+                "id": d.id,
+                "name": d.name,
+                "description": d.description,
             }
-            for department in departments
+            for d in departments
         ]
     finally:
         db.close()
@@ -249,25 +264,25 @@ def get_patient_history(patient_id):
 
         appointments = [
             {
-                "id": appointment.id,
-                "datetime": appointment.appointment_datetime.isoformat(),
-                "doctor_id": appointment.doctor_id,
-                "doctor_name": appointment.doctor.full_name if appointment.doctor else None,
-                "specialty": appointment.doctor.specialty if appointment.doctor else None,
-                "status": appointment.status,
+                "id": a.id,
+                "datetime": a.appointment_datetime.isoformat(),
+                "doctor_id": a.doctor_id,
+                "doctor_name": a.doctor.full_name if a.doctor else None,
+                "specialty": a.doctor.specialty if a.doctor else None,
+                "status": a.status,
             }
-            for appointment in sorted(patient.appointments, key=lambda a: a.appointment_datetime)
+            for a in sorted(patient.appointments, key=lambda item: item.appointment_datetime)
         ]
 
         treatments = [
             {
-                "id": treatment.id,
-                "doctor_id": treatment.doctor_id,
-                "doctor_name": treatment.doctor.full_name if treatment.doctor else None,
-                "diagnosis": treatment.diagnosis,
-                "plan": treatment.treatment_plan,
+                "id": t.id,
+                "doctor_id": t.doctor_id,
+                "doctor_name": t.doctor.full_name if t.doctor else None,
+                "diagnosis": t.diagnosis,
+                "plan": t.treatment_plan,
             }
-            for treatment in sorted(patient.treatments, key=lambda t: t.created_at)
+            for t in sorted(patient.treatments, key=lambda item: item.created_at)
         ]
 
         return {
