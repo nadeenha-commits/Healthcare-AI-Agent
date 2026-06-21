@@ -25,9 +25,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://healthcare_user:healthcare_pass@db:5432/healthcare_db
       - SECRET_KEY=change_me_to_secure_in_production
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL=${GEMINI_MODEL}
-      - GEMINI_API_URL=${GEMINI_API_URL}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_API_URL=${GEMINI_API_URL:-}
       - FLASK_ENV=production
       - PYTHONPATH=/project
     depends_on:
