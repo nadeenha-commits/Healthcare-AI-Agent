@@ -13,6 +13,7 @@ interface Message {
   }>;
 }
 
+
 export const Chat: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
