@@ -1,44 +1,134 @@
-"""
-Simple Gemini client placeholder.
-This module supports two modes:
-- If GEMINI_API_URL and GEMINI_API_KEY are provided in env, it will POST to that URL with the key in headers.
-- Otherwise it provides a mock response to allow local testing.
-
-NOTE: Fill GEMINI_API_URL and GEMINI_API_KEY in environment when you want to call the real Gemini Free API.
-"""
 import os
 import requests
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_API_URL = os.getenv('GEMINI_API_URL')
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash"
+GEMINI_API_URL = os.getenv("GEMINI_API_URL") or (
+    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+)
 
 
 def generate_text(prompt: str, max_tokens: int = 512) -> dict:
-    """Return dict with keys: { 'text': str, 'raw': object }
-    If real API not configured, returns a mock reply.
     """
-    if not GEMINI_API_URL or not GEMINI_API_KEY:
-        # Mock simple behavior for demo purposes
-        # Very naive rule-based responses to help agent logic during development.
-        lower = prompt.lower()
-        if 'book' in lower and 'appointment' in lower:
-            # instruct agent to call tools in order
-            return {'text': '{"action": "book_flow"}', 'raw': None}
-        if 'who has the most' in lower or 'busiest' in lower:
-            return {'text': 'Dr. Amit Patel is busiest next week with 12 appointments.', 'raw': None}
-        # default echo
-        return {'text': 'I did not find a configured Gemini API key. Running in mock LLM mode.', 'raw': None}
+    Calls the Gemini generateContent REST API.
 
-    # If GEMINI values provided, make a generic POST request.
-    headers = {'Authorization': f'Bearer {GEMINI_API_KEY}', 'Content-Type': 'application/json'}
-    payload = {'prompt': prompt, 'max_tokens': max_tokens}
+    Returns:
+    {
+        "text": str,
+        "raw": object
+    }
+
+    If GEMINI_API_KEY is missing, returns a local mock response so the project
+    can still run in demo/dev mode.
+    """
+    if not GEMINI_API_KEY:
+        return _mock_response(prompt)
+
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt,
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.2,
+        },
+    }
+
     try:
-        r = requests.post(GEMINI_API_URL, json=payload, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        # surface top-level text (implementation depends on provider response schema)
-        text = data.get('text') or data.get('output') or str(data)
-        return {'text': text, 'raw': data}
-    except Exception as e:
-        return {'text': f'LLM call failed: {e}', 'raw': None}
+        response = requests.post(
+            GEMINI_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
 
+        data = response.json()
+        text = _extract_text(data)
+
+        return {
+            "text": text,
+            "raw": data,
+        }
+
+    except Exception as exc:
+        return {
+            "text": f"LLM call failed: {exc}",
+            "raw": None,
+        }
+
+
+def _extract_text(data: dict) -> str:
+    """
+    Extracts the text from Gemini generateContent response.
+    """
+    try:
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return ""
+
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+
+        if not parts:
+            return ""
+
+        return parts[0].get("text", "")
+
+    except Exception:
+        return str(data)
+
+
+def _mock_response(prompt: str) -> dict:
+    """
+    Local fallback for development when GEMINI_API_KEY is not configured.
+    Keeps the project demo working without external API calls.
+    """
+    lower = prompt.lower()
+
+    if "book" in lower and "appointment" in lower:
+        return {
+            "text": '{"action": "book_flow"}',
+            "raw": None,
+        }
+
+    if "search patient" in lower or "find patient" in lower:
+        return {
+            "text": '{"action": "search_patient", "args": {"query": "Sarah Cohen"}}',
+            "raw": None,
+        }
+
+    if "list doctors" in lower or "show doctors" in lower:
+        return {
+            "text": '{"action": "list_doctors", "args": {}}',
+            "raw": None,
+        }
+
+    if "busiest doctor" in lower or "most appointments" in lower:
+        return {
+            "text": '{"action": "busiest_doctor", "args": {}}',
+            "raw": None,
+        }
+
+    if "department load" in lower:
+        return {
+            "text": '{"action": "department_load", "args": {}}',
+            "raw": None,
+        }
+
+    return {
+        "text": "I am running in mock LLM mode because GEMINI_API_KEY is not configured.",
+        "raw": None,
+    }

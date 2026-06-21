@@ -1,7 +1,10 @@
+# Python cache files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Python build/distribution files
 .Python
 build/
 develop-eggs/
@@ -19,6 +22,8 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Environment files
 .env
 .venv
 env/
@@ -26,18 +31,38 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Frontend local environment files
+frontend/.env
+frontend/.env.local
+
+# OS files
 .DS_Store
+
+# Database files
 *.sqlite
 *.db
+
+# IDE/editor files
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+
+# Test/coverage/cache files
 .coverage
 htmlcov/
 .pytest_cache/
 .hypothesis/
-node_modules/
 .cache/
 
+# Frontend dependencies
+node_modules/
+frontend/node_modules/
+
+# Logs
+*.log
+
+# Manual local test JSON files created during development
+agent-*.json
