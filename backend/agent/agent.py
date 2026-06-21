@@ -1,22 +1,34 @@
 import json
-import re
-from datetime import datetime
 from typing import Optional
 
-from backend.agent.prompts import SYSTEM_PROMPT
+from backend.agent.booking_flow import handle_book_flow
 from backend.agent.gemini_client import generate_text
+from backend.agent.message_parser import (
+    choose_patient_match,
+    extract_date_range_from_message,
+    extract_first_number,
+    extract_name_from_message,
+    extract_patient_history_query,
+    extract_specialty_from_message,
+    is_booking_request,
+)
+from backend.agent.prompts import SYSTEM_PROMPT
+from backend.agent.response_formatters import (
+    format_datetime,
+    format_doctor_schedule,
+    format_patient_clarification,
+    format_patient_history,
+)
 from backend.agent.tools import (
-    search_patient,
-    available_slots,
-    book_appointment,
     busiest_doctor,
+    cancel_appointment,
+    department_load_tool,
+    doctor_schedule,
+    list_departments,
+    list_doctors,
     monthly_appointments,
     patient_history,
-    doctor_schedule,
-    cancel_appointment,
-    list_doctors,
-    list_departments,
-    department_load_tool,
+    search_patient,
 )
 
 
@@ -30,7 +42,17 @@ class Agent:
     def add_history(self, session_id: Optional[str], role: str, text: str):
         sid = session_id or "default"
         self.histories.setdefault(sid, [])
-        self.histories[sid].append({"role": role, "text": text})
+        self.histories[sid].append({
+            "role": role,
+            "text": text,
+        })
+
+    def _finish(self, session_id, reply, tools_called):
+        self.add_history(session_id, "assistant", reply)
+        return {
+            "reply": reply,
+            "tools_called": tools_called,
+        }
 
     def handle_message(self, message: str, session_id: Optional[str] = None):
         self.add_history(session_id, "user", message)
@@ -39,183 +61,369 @@ class Agent:
         tools_called = []
 
         if message_lower in ["hi", "hello", "hey"]:
-            reply = "Hello! I can help with patients, doctors, appointments, schedules, treatments, and clinic analytics."
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            reply = (
+                "Hello! I can help with patients, doctors, appointments, "
+                "schedules, treatments, and clinic analytics."
+            )
+            return self._finish(session_id, reply, tools_called)
+
+        # Booking must be checked before simple doctor/specialty listing.
+        if is_booking_request(message_lower):
+            payload = {
+                "action": "book_flow",
+                "args": {
+                    "query": extract_name_from_message(message),
+                    "specialty": extract_specialty_from_message(message),
+                    "date_range": extract_date_range_from_message(message),
+                },
+            }
+
+            return handle_book_flow(
+                payload=payload,
+                message=message,
+                session_id=session_id,
+                add_history=self.add_history,
+            )
 
         if message_lower.startswith("find patient"):
-            query = message.replace("Find patient", "").replace("find patient", "").strip()
-
-            patients = search_patient(query)
-            tools_called.append({"name": "search_patient", "args": {"query": query}, "result_count": len(patients)})
-
-            if not patients:
-                reply = f'No patient matched "{query}".'
-            else:
-                lines = ["Patients found:"]
-                for p in patients:
-                    lines.append(f"• {p.get('full_name')} | Age: {p.get('age')} | Phone: {p.get('phone')}")
-                reply = "\n".join(lines)
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_find_patient(message, session_id)
 
         if "department load" in message_lower:
-            try:
-                result = department_load_tool()
-                tools_called.append({"name": "department_load", "args": {}, "result": result})
+            return self._handle_department_load(session_id)
 
-                if not result:
-                    reply = "I could not calculate department load."
-                else:
-                    lines = ["Department load:"]
-
-                    if isinstance(result, dict):
-                        result = result.get("departments") or result.get("items") or result.get("data") or []
-
-                    for item in result:
-                        department = item.get("department") or item.get("department_name") or item.get(
-                            "name") or "Unknown department"
-                        count = item.get("appointments") or item.get("appointment_count") or item.get(
-                            "count") or item.get("total") or 0
-                        lines.append(f"• {department}: {count} appointments")
-
-                    reply = "\n".join(lines)
-
-            except Exception as e:
-                tools_called.append({
-                    "name": "department_load",
-                    "args": {},
-                    "error": str(e),
-                })
-                reply = "Department load is currently unavailable, but other analytics are working."
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
         if message_lower in ["list departments", "show departments", "departments"]:
-            departments = list_departments()
-            tools_called.append({"name": "list_departments", "args": {}, "result_count": len(departments)})
-
-            lines = ["Departments:"]
-            for d in departments:
-                lines.append(f"• {d.get('name')} - {d.get('description')}")
-
-            reply = "\n".join(lines)
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_list_departments(session_id)
 
         if "cardiologist" in message_lower or "cardiologists" in message_lower:
-            doctors = list_doctors(specialty="Cardiology")
-            tools_called.append({"name": "list_doctors", "args": {"specialty": "Cardiology"}, "result_count": len(doctors)})
-
-            if not doctors:
-                reply = "No cardiologists found."
-            else:
-                lines = ["Cardiologists:"]
-                for d in doctors:
-                    lines.append(f"• Dr. {d.get('full_name')} | Department: {d.get('department_name')}")
-                reply = "\n".join(lines)
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_cardiologists(session_id)
 
         if message_lower in ["list doctors", "show doctors"]:
-            doctors = list_doctors()
-            tools_called.append({"name": "list_doctors", "args": {}, "result_count": len(doctors)})
-
-            lines = ["Doctors:"]
-            for d in doctors:
-                lines.append(f"• Dr. {d.get('full_name')} | {d.get('specialty')} | {d.get('department_name')}")
-
-            reply = "\n".join(lines)
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_list_doctors(session_id)
 
         if "busiest doctor" in message_lower or "most appointments" in message_lower:
-            result = busiest_doctor()
-            tools_called.append({"name": "busiest_doctor", "args": {}, "result": result})
-
-            if not result or "error" in result:
-                reply = "I could not calculate the busiest doctor."
-            else:
-                doctor_name = result.get("doctor") or result.get("doctor_name") or result.get("full_name") or result.get("name") or "Unknown doctor"
-                count = result.get("appointments") or result.get("appointment_count") or result.get("count") or 0
-                reply = f"The busiest doctor is Dr. {doctor_name} with {count} appointments."
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_busiest_doctor(session_id)
 
         if "appointments this month" in message_lower or "monthly appointments" in message_lower:
-            result = monthly_appointments()
-            tools_called.append({"name": "monthly_appointments", "args": {}, "result": result})
-
-            if not result or "error" in result:
-                reply = "I could not calculate this month's appointments."
-            else:
-                count = result.get("appointments") or result.get("count") or result.get("appointment_count") or result.get("total") or 0
-                reply = f"There are {count} appointments this month."
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_monthly_appointments(session_id)
 
         if "cancel appointment" in message_lower:
-            appointment_id = self._extract_first_number(message)
-
-            if appointment_id is None:
-                reply = "Please provide the appointment ID you want to cancel."
-                self.add_history(session_id, "assistant", reply)
-                return {"reply": reply, "tools_called": tools_called}
-
-            result = cancel_appointment(appointment_id)
-            tools_called.append({"name": "cancel_appointment", "args": {"appointment_id": appointment_id}, "result": result})
-
-            if not result or "error" in result:
-                reply = f"Could not cancel appointment {appointment_id}."
-            else:
-                reply = f"Appointment {appointment_id} was cancelled successfully."
-                if result.get("patient_name"):
-                    reply += f"\nPatient: {result.get('patient_name')}"
-                if result.get("doctor_name"):
-                    reply += f"\nDoctor: Dr. {result.get('doctor_name')}"
-                if result.get("appointment_datetime"):
-                    reply += f"\nTime: {self._format_datetime(result.get('appointment_datetime'))}"
-
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_cancel_appointment(message, session_id)
 
         if "patient history" in message_lower or "history for" in message_lower:
-            query = self._extract_patient_history_query(message)
-
-            patients = search_patient(query)
-            tools_called.append({"name": "search_patient", "args": {"query": query}, "result_count": len(patients)})
-
-            if not patients:
-                reply = f'No patient matched "{query}".'
-                self.add_history(session_id, "assistant", reply)
-                return {"reply": reply, "tools_called": tools_called}
-
-            patient = patients[0]
-            result = patient_history(patient["id"])
-            tools_called.append({"name": "patient_history", "args": {"patient_id": patient["id"]}, "result": result})
-
-            reply = self._format_patient_history(patient, result)
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+            return self._handle_patient_history(message, session_id)
 
         if "schedule" in message_lower and "doctor" in message_lower:
-            doctor_id = self._extract_first_number(message)
+            return self._handle_doctor_schedule(message, session_id)
 
-            if doctor_id is None:
-                reply = "Please provide the doctor ID to show the schedule."
-                self.add_history(session_id, "assistant", reply)
-                return {"reply": reply, "tools_called": tools_called}
+        return self._handle_llm_fallback(message, session_id)
 
-            result = doctor_schedule(doctor_id)
-            tools_called.append({"name": "doctor_schedule", "args": {"doctor_id": doctor_id}, "result": result})
+    def _handle_find_patient(self, message, session_id):
+        tools_called = []
+        query = message.replace("Find patient", "").replace("find patient", "").strip()
 
-            reply = self._format_doctor_schedule(doctor_id, result)
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
+        patients = search_patient(query)
+
+        tools_called.append({
+            "name": "search_patient",
+            "args": {
+                "query": query,
+            },
+            "result_count": len(patients),
+        })
+
+        if not patients:
+            reply = f'No patient matched "{query}".'
+            return self._finish(session_id, reply, tools_called)
+
+        lines = ["Patients found:"]
+
+        for patient in patients:
+            lines.append(
+                f"• {patient.get('full_name')} | "
+                f"Age: {patient.get('age')} | "
+                f"Phone: {patient.get('phone')}"
+            )
+
+        reply = "\n".join(lines)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_department_load(self, session_id):
+        tools_called = []
+
+        try:
+            result = department_load_tool()
+
+            tools_called.append({
+                "name": "department_load",
+                "args": {},
+                "result": result,
+            })
+
+            if not result:
+                reply = "I could not calculate department load."
+                return self._finish(session_id, reply, tools_called)
+
+            lines = ["Department load:"]
+
+            if isinstance(result, dict):
+                result = (
+                    result.get("departments")
+                    or result.get("items")
+                    or result.get("data")
+                    or []
+                )
+
+            for item in result:
+                department = (
+                    item.get("department")
+                    or item.get("department_name")
+                    or item.get("name")
+                    or "Unknown department"
+                )
+                count = (
+                    item.get("appointments")
+                    or item.get("appointment_count")
+                    or item.get("count")
+                    or item.get("total")
+                    or 0
+                )
+
+                lines.append(f"• {department}: {count} appointments")
+
+            reply = "\n".join(lines)
+
+        except Exception as exc:
+            tools_called.append({
+                "name": "department_load",
+                "args": {},
+                "error": str(exc),
+            })
+
+            reply = "Department load is currently unavailable, but other analytics are working."
+
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_list_departments(self, session_id):
+        tools_called = []
+        departments = list_departments()
+
+        tools_called.append({
+            "name": "list_departments",
+            "args": {},
+            "result_count": len(departments),
+        })
+
+        lines = ["Departments:"]
+
+        for department in departments:
+            lines.append(
+                f"• {department.get('name')} - {department.get('description')}"
+            )
+
+        reply = "\n".join(lines)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_cardiologists(self, session_id):
+        tools_called = []
+        doctors = list_doctors(specialty="Cardiology")
+
+        tools_called.append({
+            "name": "list_doctors",
+            "args": {
+                "specialty": "Cardiology",
+            },
+            "result_count": len(doctors),
+        })
+
+        if not doctors:
+            reply = "No cardiologists found."
+            return self._finish(session_id, reply, tools_called)
+
+        lines = ["Cardiologists:"]
+
+        for doctor in doctors:
+            lines.append(
+                f"• Dr. {doctor.get('full_name')} | "
+                f"Department: {doctor.get('department_name')}"
+            )
+
+        reply = "\n".join(lines)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_list_doctors(self, session_id):
+        tools_called = []
+        doctors = list_doctors()
+
+        tools_called.append({
+            "name": "list_doctors",
+            "args": {},
+            "result_count": len(doctors),
+        })
+
+        lines = ["Doctors:"]
+
+        for doctor in doctors:
+            lines.append(
+                f"• Dr. {doctor.get('full_name')} | "
+                f"{doctor.get('specialty')} | "
+                f"{doctor.get('department_name')}"
+            )
+
+        reply = "\n".join(lines)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_busiest_doctor(self, session_id):
+        tools_called = []
+        result = busiest_doctor()
+
+        tools_called.append({
+            "name": "busiest_doctor",
+            "args": {},
+            "result": result,
+        })
+
+        if not result or "error" in result:
+            reply = "I could not calculate the busiest doctor."
+            return self._finish(session_id, reply, tools_called)
+
+        doctor_name = (
+            result.get("doctor")
+            or result.get("doctor_name")
+            or result.get("full_name")
+            or result.get("name")
+            or "Unknown doctor"
+        )
+
+        count = (
+            result.get("appointments")
+            or result.get("appointment_count")
+            or result.get("count")
+            or 0
+        )
+
+        reply = f"The busiest doctor is Dr. {doctor_name} with {count} appointments."
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_monthly_appointments(self, session_id):
+        tools_called = []
+        result = monthly_appointments()
+
+        tools_called.append({
+            "name": "monthly_appointments",
+            "args": {},
+            "result": result,
+        })
+
+        if not result or "error" in result:
+            reply = "I could not calculate this month's appointments."
+            return self._finish(session_id, reply, tools_called)
+
+        count = (
+            result.get("appointments")
+            or result.get("count")
+            or result.get("appointment_count")
+            or result.get("total")
+            or 0
+        )
+
+        reply = f"There are {count} appointments this month."
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_cancel_appointment(self, message, session_id):
+        tools_called = []
+        appointment_id = extract_first_number(message)
+
+        if appointment_id is None:
+            reply = "Please provide the appointment ID you want to cancel."
+            return self._finish(session_id, reply, tools_called)
+
+        result = cancel_appointment(appointment_id)
+
+        tools_called.append({
+            "name": "cancel_appointment",
+            "args": {
+                "appointment_id": appointment_id,
+            },
+            "result": result,
+        })
+
+        if not result or "error" in result:
+            reply = f"Could not cancel appointment {appointment_id}."
+            return self._finish(session_id, reply, tools_called)
+
+        reply = f"Appointment {appointment_id} was cancelled successfully."
+
+        if result.get("patient_name"):
+            reply += f"\nPatient: {result.get('patient_name')}"
+
+        if result.get("doctor_name"):
+            reply += f"\nDoctor: Dr. {result.get('doctor_name')}"
+
+        if result.get("appointment_datetime"):
+            reply += f"\nTime: {format_datetime(result.get('appointment_datetime'))}"
+
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_patient_history(self, message, session_id):
+        tools_called = []
+        query = extract_patient_history_query(message)
+
+        patients = search_patient(query)
+
+        tools_called.append({
+            "name": "search_patient",
+            "args": {
+                "query": query,
+            },
+            "result_count": len(patients),
+        })
+
+        if not patients:
+            reply = f'No patient matched "{query}".'
+            return self._finish(session_id, reply, tools_called)
+
+        patient = choose_patient_match(patients, query)
+
+        if patient is None:
+            reply = format_patient_clarification(query, patients)
+            return self._finish(session_id, reply, tools_called)
+
+        result = patient_history(patient["id"])
+
+        tools_called.append({
+            "name": "patient_history",
+            "args": {
+                "patient_id": patient["id"],
+            },
+            "result": result,
+        })
+
+        reply = format_patient_history(patient, result)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_doctor_schedule(self, message, session_id):
+        tools_called = []
+        doctor_id = extract_first_number(message)
+
+        if doctor_id is None:
+            reply = "Please provide the doctor ID to show the schedule."
+            return self._finish(session_id, reply, tools_called)
+
+        result = doctor_schedule(doctor_id)
+
+        tools_called.append({
+            "name": "doctor_schedule",
+            "args": {
+                "doctor_id": doctor_id,
+            },
+            "result": result,
+        })
+
+        reply = format_doctor_schedule(doctor_id, result)
+        return self._finish(session_id, reply, tools_called)
+
+    def _handle_llm_fallback(self, message, session_id):
+        tools_called = []
 
         prompt = f"{SYSTEM_PROMPT}\nUser: {message}\nAssistant:"
         llm_resp = generate_text(prompt)
@@ -224,198 +432,17 @@ class Agent:
         try:
             payload = json.loads(text)
         except Exception:
-            self.add_history(session_id, "assistant", text)
-            return {"reply": text, "tools_called": []}
+            return self._finish(session_id, text, tools_called)
 
         action = payload.get("action")
 
         if action == "book_flow":
-            return self._handle_book_flow(payload, message, session_id)
+            return handle_book_flow(
+                payload=payload,
+                message=message,
+                session_id=session_id,
+                add_history=self.add_history,
+            )
 
         reply = f"LLM requested unknown action: {action}. Raw: {payload}"
-        self.add_history(session_id, "assistant", reply)
-        return {"reply": reply, "tools_called": tools_called}
-
-    def _handle_book_flow(self, payload: dict, message: str, session_id: Optional[str] = None):
-        tools_called = []
-
-        args = payload.get("args", {})
-        query = args.get("query") or self._extract_name_from_message(message)
-        specialty = args.get("specialty") or self._extract_specialty_from_message(message)
-        date_range = args.get("date_range") or "next week"
-
-        patients = search_patient(query)
-        tools_called.append({"name": "search_patient", "args": {"query": query}, "result_count": len(patients)})
-
-        if len(patients) == 0:
-            reply = f'No patient matched "{query}". Would you like to add a new patient?'
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
-
-        patient = patients[0]
-        patient_id = patient["id"]
-
-        slots = available_slots(specialty=specialty, doctor_id=None, date=date_range)
-        tools_called.append({"name": "available_slots", "args": {"specialty": specialty, "date_range": date_range}, "result_count": len(slots)})
-
-        if not slots:
-            reply = f"No available slots found for {specialty} in {date_range}."
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
-
-        booked = None
-        last_error = None
-
-        for choice in slots:
-            for dt in choice.get("slots", []):
-                attempt = book_appointment(patient_id, choice["doctor_id"], dt)
-
-                tools_called.append({
-                    "name": "book_appointment",
-                    "args": {"patient_id": patient_id, "doctor_id": choice["doctor_id"], "datetime": dt},
-                    "result": attempt,
-                })
-
-                if "error" not in attempt:
-                    booked = attempt
-                    break
-
-                last_error = attempt.get("error")
-
-            if booked:
-                break
-
-        if not booked:
-            reply = "Could not find any available appointment slot."
-            if last_error:
-                reply += f" Last error: {last_error}"
-            self.add_history(session_id, "assistant", reply)
-            return {"reply": reply, "tools_called": tools_called}
-
-        reply = (
-            f"Booked appointment for {booked.get('patient_name', patient['full_name'])} "
-            f"with Dr. {booked.get('doctor_name')} "
-            f"({booked.get('specialty')}) "
-            f"on {self._format_datetime(booked.get('appointment_datetime'))}.\n"
-            f"Appointment ID: {booked.get('id')}"
-        )
-
-        self.add_history(session_id, "assistant", reply)
-        return {"reply": reply, "tools_called": tools_called}
-
-    def _extract_first_number(self, message: str):
-        match = re.search(r"\d+", message)
-        return int(match.group()) if match else None
-
-    def _extract_name_from_message(self, message: str):
-        tokens = message.split(" for ")
-        if len(tokens) > 1:
-            return tokens[1].split(" with ")[0].strip()
-        return message.strip()
-
-    def _extract_specialty_from_message(self, message: str):
-        for specialty in ["cardiology", "neurology", "pediatrics", "oncology", "general"]:
-            if specialty in message.lower():
-                return specialty.capitalize()
-
-        if "heart" in message.lower() or "cardiologist" in message.lower():
-            return "Cardiology"
-
-        return None
-
-    def _extract_patient_history_query(self, message: str):
-        message_lower = message.lower()
-
-        if "patient history for" in message_lower:
-            return message.split("for")[-1].strip()
-        if "history for" in message_lower:
-            return message.split("for")[-1].strip()
-        if "patient history" in message_lower:
-            original_index = message_lower.find("patient history") + len("patient history")
-            return message[original_index:].strip()
-
-        return message.strip()
-
-    def _format_datetime(self, value):
-        if not value:
-            return "Unknown date"
-
-        try:
-            return datetime.fromisoformat(str(value).replace("Z", "")).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return str(value)
-
-    def _format_patient_history(self, patient: dict, history: dict):
-        if not history or "error" in history:
-            return f"No history found for {patient.get('full_name')}."
-
-        patient_info = history.get("patient", {})
-        appointments = history.get("appointments", [])
-        treatments = history.get("treatments", [])
-
-        active_appointments = [a for a in appointments if a.get("status") != "cancelled"]
-
-        lines = [
-            f"Patient: {patient_info.get('full_name')}",
-            f"Age: {patient_info.get('age')}",
-            f"Phone: {patient_info.get('phone')}",
-            f"Medical History: {patient_info.get('medical_history')}",
-            "",
-            "=== APPOINTMENTS ===",
-        ]
-
-        if active_appointments:
-            for a in active_appointments:
-                lines.append(
-                    f"• {self._format_datetime(a.get('datetime'))} | "
-                    f"Dr. {a.get('doctor_name')} ({a.get('specialty')}) | "
-                    f"Status: {a.get('status')}"
-                )
-        else:
-            lines.append("• No active appointments")
-
-        lines.extend(["", "=== TREATMENTS ==="])
-
-        if treatments:
-            for t in treatments:
-                lines.append(
-                    f"• Dr. {t.get('doctor_name')} | "
-                    f"Diagnosis: {t.get('diagnosis')} | "
-                    f"Plan: {t.get('plan')}"
-                )
-        else:
-            lines.append("• No treatments")
-
-        return "\n".join(lines)
-
-    def _format_doctor_schedule(self, doctor_id: int, schedule):
-        if not schedule:
-            return f"No appointments found for doctor {doctor_id}."
-
-        if "error" in schedule:
-            return f"Doctor {doctor_id} was not found."
-
-        doctor = schedule.get("doctor", {})
-        appointments = schedule.get("appointments", [])
-        active_appointments = [a for a in appointments if a.get("status") != "cancelled"]
-
-        lines = [
-            f"Dr. {doctor.get('full_name')} ({doctor.get('specialty')})",
-            "",
-            "=== UPCOMING APPOINTMENTS ===",
-        ]
-
-        if active_appointments:
-            for a in active_appointments:
-                lines.append(
-                    f"• {a.get('patient_name')} - "
-                    f"{self._format_datetime(a.get('datetime'))} "
-                    f"({a.get('status')})"
-                )
-        else:
-            lines.append("• No scheduled appointments")
-
-        lines.append("")
-        lines.append(f"Total active appointments: {len(active_appointments)}")
-
-        return "\n".join(lines)
+        return self._finish(session_id, reply, tools_called)
