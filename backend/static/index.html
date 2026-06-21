@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Healthcare AI Agent - Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; display:flex; height:100vh; }
+    #chat { width: 60%; border-right: 1px solid #ddd; padding: 20px; box-sizing: border-box; overflow-y: auto; }
+    #debug { width: 40%; padding: 20px; box-sizing: border-box; overflow-y: auto; }
+    .message { margin: 10px 0; white-space: pre-line; line-height: 1.45; }
+    .user { color: #0066cc; }
+    .assistant { color: #111; }
+    #input { width: calc(100% - 70px); box-sizing: border-box; padding: 10px; }
+    #send { padding: 10px 14px; }
+  </style>
+</head>
+<body>
+  <div id="chat">
+    <h2>Healthcare AI Agent (Demo)</h2>
+    <div id="messages"></div>
+    <div>
+      <input id="input" placeholder="Ask the assistant..." />
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+  <div id="debug">
+    <h3>Tools Called</h3>
+    <pre id="tools"></pre>
+    <h3>Session</h3>
+    <pre id="session"></pre>
+  </div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const toolsEl = document.getElementById('tools');
+const sessionEl = document.getElementById('session');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+let sessionId = 'demo-session-1';
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'message ' + role;
+  div.textContent = role + ': ' + text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+
+  if (!text || sendBtn.disabled) {
+    return;
+  }
+
+  addMessage('user', text);
+  inputEl.value = '';
+  toolsEl.textContent = '...waiting';
+  sendBtn.disabled = true;
+
+  try {
+    const res = await fetch('/agent/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text, session_id: sessionId})
+    });
+
+    const data = await res.json();
+
+    addMessage('assistant', data.reply);
+    toolsEl.textContent = JSON.stringify(data.tools_called, null, 2);
+
+    const historyRes = await fetch('/agent/history?session_id=' + sessionId);
+    sessionEl.textContent = JSON.stringify(await historyRes.json(), null, 2);
+  } catch (err) {
+    addMessage('assistant', 'Sorry, an error occurred while processing your request.');
+    toolsEl.textContent = String(err);
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendBtn.onclick = sendMessage;
+
+inputEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    sendMessage();
+  }
+});
+</script>
+</body>
+</html>
