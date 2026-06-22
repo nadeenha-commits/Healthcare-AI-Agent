@@ -23,6 +23,7 @@ from backend.agent.tools import (
     patient_history,
     search_patient,
 )
+from backend.agent.zep_memory import get_memory_context
 
 
 class Agent:
@@ -232,7 +233,16 @@ class Agent:
         return self._finish(session_id, reply, tools_called)
 
     def _handle_llm_fallback(self, message, session_id):
-        prompt = f"{SYSTEM_PROMPT}\nUser: {message}\nAssistant:"
+        memory_context = get_memory_context(session_id)
+
+        memory_section = ""
+        if memory_context:
+            memory_section = (
+                "\nRelevant long-term memory from Zep:\n"
+                f"{memory_context}\n"
+            )
+
+        prompt = f"{SYSTEM_PROMPT}{memory_section}\nUser: {message}\nAssistant:"
         llm_resp = generate_text(prompt)
         text = llm_resp.get("text", "")
 

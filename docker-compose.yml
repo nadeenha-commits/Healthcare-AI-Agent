@@ -24,10 +24,15 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://healthcare_user:healthcare_pass@db:5432/healthcare_db
-      - SECRET_KEY=change_me_to_secure_in_production
+      - SECRET_KEY=${SECRET_KEY:-change_me_to_secure_in_production}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - GEMINI_API_URL=${GEMINI_API_URL:-}
+      - ZEP_API_KEY=${ZEP_API_KEY:-}
+      - ZEP_USER_ID=${ZEP_USER_ID:-healthcare-demo-user}
+      - ZEP_USER_EMAIL=${ZEP_USER_EMAIL:-healthcare.demo@example.com}
+      - ZEP_USER_FIRST_NAME=${ZEP_USER_FIRST_NAME:-Healthcare}
+      - ZEP_USER_LAST_NAME=${ZEP_USER_LAST_NAME:-Demo}
       - FLASK_ENV=production
       - PYTHONPATH=/project
     depends_on:
