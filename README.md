@@ -2,13 +2,13 @@
 
 A university final project for the course **AI Agents in Python**.
 
-This project is a clinic / hospital management system with an AI-powered chat interface. The Agent can answer questions from the database and perform real actions such as searching patients, checking doctor availability, booking appointments, cancelling appointments, adding treatment records, and generating clinic analytics.
+This project is a clinic / hospital management system with an AI-powered chat interface. The Agent can understand free-text user requests, call backend tools, read/write from a PostgreSQL database, and return useful responses for clinic workflows such as searching patients, checking doctor availability, booking appointments, cancelling appointments, adding treatment records, and generating analytics.
 
 ---
 
 ## Project Overview
 
-**System Flow:**
+**System Flow**
 
 ```text
 React / Chat UI
@@ -26,14 +26,16 @@ Final Response
 
 The system demonstrates:
 
-* AI Agent architecture with function/tool calling
-* Multi-step agentic workflows
-* REST API built with Flask
-* PostgreSQL database with related tables
-* JWT authentication and hashed passwords
-* Gemini API integration with local mock fallback
-* Docker Compose setup
-* React + TypeScript frontend bonus
+- AI Agent architecture with function/tool calling
+- Multi-step agentic workflows
+- REST API built with Flask
+- PostgreSQL database with related tables
+- SQLAlchemy ORM
+- JWT authentication and hashed passwords
+- Gemini API integration with local mock fallback
+- Docker Compose setup
+- React + TypeScript frontend bonus
+- SSE-based workflow trace in the frontend
 
 ---
 
@@ -41,25 +43,25 @@ The system demonstrates:
 
 ### Backend
 
-* **Language:** Python
-* **Framework:** Flask
-* **Database:** PostgreSQL
-* **ORM:** SQLAlchemy
-* **LLM:** Gemini API
-* **Auth:** JWT + bcrypt/passlib
-* **Server:** Gunicorn
+- **Language:** Python
+- **Framework:** Flask
+- **Database:** PostgreSQL
+- **ORM:** SQLAlchemy
+- **LLM:** Gemini API
+- **Auth:** JWT + bcrypt/passlib
+- **Server:** Gunicorn
 
 ### Frontend
 
-* **Framework:** React 18
-* **Language:** TypeScript
-* **HTTP:** Fetch API
-* **Styling:** CSS
+- **Framework:** React 18
+- **Language:** TypeScript
+- **HTTP:** Fetch API
+- **Styling:** Bootstrap 5 components and utility classes
 
 ### DevOps
 
-* **Containerization:** Docker
-* **Orchestration:** Docker Compose
+- **Containerization:** Docker
+- **Orchestration:** Docker Compose
 
 ---
 
@@ -67,7 +69,7 @@ The system demonstrates:
 
 The project uses **6 connected database tables**.
 
-### 1. users
+### 1. `users`
 
 Stores system users and authentication data.
 
@@ -80,7 +82,16 @@ role
 created_at
 ```
 
-### 2. departments
+Important constraints:
+
+```text
+email is unique
+role is limited to user / staff / admin
+```
+
+---
+
+### 2. `departments`
 
 Stores clinic departments.
 
@@ -90,7 +101,15 @@ name
 description
 ```
 
-### 3. doctors
+Important constraints:
+
+```text
+name is unique
+```
+
+---
+
+### 3. `doctors`
 
 Stores doctor information.
 
@@ -107,7 +126,9 @@ Relationship:
 doctors.department_id → departments.id
 ```
 
-### 4. patients
+---
+
+### 4. `patients`
 
 Stores patient records.
 
@@ -121,7 +142,17 @@ medical_history
 created_at
 ```
 
-### 5. appointments
+Important constraints:
+
+```text
+phone is unique
+age must be non-negative
+gender is limited to M / F / Other
+```
+
+---
+
+### 5. `appointments`
 
 Stores appointment bookings.
 
@@ -141,7 +172,17 @@ appointments.patient_id → patients.id
 appointments.doctor_id → doctors.id
 ```
 
-### 6. treatments
+Important constraints:
+
+```text
+status is limited to scheduled / cancelled / completed
+active doctor slots are unique
+active patient slots are unique
+```
+
+---
+
+### 6. `treatments`
 
 Stores treatment records.
 
@@ -181,6 +222,54 @@ Treatments
 Doctors
 ```
 
+### Text ERD
+
+```text
+departments
+  id PK
+  name UNIQUE
+  description
+
+doctors
+  id PK
+  full_name
+  specialty
+  department_id FK → departments.id
+
+patients
+  id PK
+  full_name
+  phone UNIQUE
+  age
+  gender
+  medical_history
+  created_at
+
+appointments
+  id PK
+  patient_id FK → patients.id
+  doctor_id FK → doctors.id
+  appointment_datetime
+  status
+  created_at
+
+treatments
+  id PK
+  patient_id FK → patients.id
+  doctor_id FK → doctors.id
+  diagnosis
+  treatment_plan
+  created_at
+
+users
+  id PK
+  full_name
+  email UNIQUE
+  password_hash
+  role
+  created_at
+```
+
 ---
 
 ## Project Structure
@@ -215,6 +304,7 @@ Healthcare-AI-Agent/
 │   │   ├── analytics_routes.py
 │   │   ├── appointment_routes.py
 │   │   ├── auth_routes.py
+│   │   ├── department_routes.py
 │   │   ├── doctor_routes.py
 │   │   ├── patient_routes.py
 │   │   └── treatment_routes.py
@@ -223,7 +313,12 @@ Healthcare-AI-Agent/
 │   │   ├── analytics_service.py
 │   │   ├── appointment_service.py
 │   │   ├── auth_service.py
-│   │   └── patient_service.py
+│   │   ├── department_service.py
+│   │   ├── doctor_service.py
+│   │   ├── patient_service.py
+│   │   ├── serializers.py
+│   │   ├── service_utils.py
+│   │   └── treatment_service.py
 │   │
 │   ├── static/
 │   │   └── index.html
@@ -233,16 +328,43 @@ Healthcare-AI-Agent/
 │       ├── responses.py
 │       └── security.py
 │
-├── docs/
 ├── frontend/
 ├── manual-tests/
-├── main.py
 ├── docker-compose.yml
 ├── .env.example
 ├── .gitignore
-├── README.md
-└── test_imports.py
+└── README.md
 ```
+
+---
+
+## Service Layer Design
+
+The backend uses a layered structure to separate responsibilities.
+
+```text
+routes/      → receive HTTP requests and return JSON responses
+services/    → business logic and database operations
+agent/       → AI Agent reasoning, tool selection, and tool execution
+db/          → SQLAlchemy models, database connection, and seed data
+utils/       → authentication, security, and shared response helpers
+```
+
+The service layer is split into focused files:
+
+```text
+appointment_service.py     → appointment listing, booking, cancellation, completion
+doctor_service.py          → doctor list, doctor details, doctor schedules
+department_service.py      → department listing
+treatment_service.py       → treatment records and patient history
+analytics_service.py       → clinic analytics
+auth_service.py            → registration, login, user profile
+patient_service.py         → patient CRUD
+service_utils.py           → shared validation helpers
+serializers.py             → shared response formatting
+```
+
+This improves code readability and avoids putting all business logic into one large service file.
 
 ---
 
@@ -256,7 +378,7 @@ Create it from the example file:
 copy .env.example .env
 ```
 
-Your root `.env` should look like this:
+Example root `.env`:
 
 ```env
 DATABASE_URL=postgresql://healthcare_user:healthcare_pass@db:5432/healthcare_db
@@ -280,7 +402,7 @@ Important:
 
 ## Docker Setup
 
-### 1. Start the project
+### 1. Start Docker services
 
 From the project root:
 
@@ -288,13 +410,13 @@ From the project root:
 docker compose up --build
 ```
 
-The backend will run at:
+Backend URL:
 
 ```text
 http://localhost:8000
 ```
 
-The default chat UI is available at:
+The simple backend demo page is available at:
 
 ```text
 http://localhost:8000/
@@ -310,7 +432,7 @@ In a second terminal:
 docker compose exec backend python -m backend.db.seed
 ```
 
-The seed script is safe to run multiple times.
+The seed script is idempotent and safe to run multiple times.
 
 ---
 
@@ -320,7 +442,7 @@ The seed script is safe to run multiple times.
 docker compose exec backend python --version
 ```
 
-Expected:
+Expected example:
 
 ```text
 Python 3.11.x
@@ -338,12 +460,106 @@ Use this safe command instead:
 docker compose exec backend python -c "import os; print('key_loaded=', bool(os.getenv('GEMINI_API_KEY'))); print('model=', os.getenv('GEMINI_MODEL')); print('custom_url=', bool(os.getenv('GEMINI_API_URL')))"
 ```
 
-Expected:
+Expected example:
 
 ```text
 key_loaded= True
 model= gemini-2.5-flash
 custom_url= False
+```
+
+---
+
+## Local Development Run
+
+This is the recommended way to run the project during development and demo testing.
+
+### Required versions
+
+```text
+Python 3.12.x
+Node.js / npm
+Docker Desktop
+```
+
+Python 3.14 is not recommended for this project because some pinned backend dependencies may not support it correctly.
+
+---
+
+### 1. Start Docker database
+
+From the project root:
+
+```powershell
+cd C:\Users\nadeenha\PycharmProjects\Healthcare-AI-Agent
+docker compose up -d
+```
+
+---
+
+### 2. Create and activate Python virtual environment
+
+From the project root:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -r backend\requirements.txt
+```
+
+If the virtual environment already exists, only activate it:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+---
+
+### 3. Seed the database
+
+```powershell
+python -m backend.db.seed
+```
+
+Expected output:
+
+```text
+Seed complete
+```
+
+---
+
+### 4. Run backend
+
+Always run the backend from the project root:
+
+```powershell
+python -m backend.app
+```
+
+Backend URL:
+
+```text
+http://127.0.0.1:8000
+```
+
+---
+
+### 5. Run frontend
+
+Open a new PowerShell terminal:
+
+```powershell
+cd C:\Users\nadeenha\PycharmProjects\Healthcare-AI-Agent\frontend
+npm install
+npm start
+```
+
+Frontend URL:
+
+```text
+http://localhost:3000
 ```
 
 ---
@@ -354,11 +570,7 @@ The project supports two modes.
 
 ### 1. Real Gemini mode
 
-When `GEMINI_API_KEY` exists in `.env`, the backend calls Gemini through:
-
-```text
-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
-```
+When `GEMINI_API_KEY` exists in `.env`, the backend calls Gemini through the configured Gemini model.
 
 The model is controlled by:
 
@@ -373,6 +585,14 @@ GEMINI_API_URL=
 ```
 
 is empty.
+
+File:
+
+```text
+backend/agent/gemini_client.py
+```
+
+---
 
 ### 2. Mock mode
 
@@ -390,133 +610,211 @@ backend/agent/gemini_client.py
 
 ## API Endpoints
 
-The project contains **23 meaningful API endpoints**.
+The project contains more than 10 meaningful Flask API endpoints.
+
+The project supports both legacy routes and `/api/...` aliases.  
+The `/api/...` routes are recommended for documentation and testing.
 
 ---
 
 ### Authentication
 
 ```text
-POST   /auth/register
-POST   /auth/login
-GET    /auth/me
-PUT    /auth/profile
+POST   /api/auth/register
+POST   /api/auth/login
+GET    /api/auth/me
+PUT    /api/auth/profile
+```
+
+Legacy equivalents:
+
+```text
+/auth/register
+/auth/login
+/auth/me
+/auth/profile
 ```
 
 Purpose:
 
-* Register a user
-* Login and receive JWT
-* Read current user profile
-* Update user profile
+- Register a user
+- Login and receive JWT
+- Read current user profile
+- Update user profile
 
 ---
 
 ### Patients
 
 ```text
-GET    /patients
-GET    /patients/<id>
-POST   /patients
-PUT    /patients/<id>
+GET    /api/patients
+GET    /api/patients/<id>
+POST   /api/patients
+PUT    /api/patients/<id>
+```
+
+Legacy equivalents:
+
+```text
+/patients
+/patients/<id>
 ```
 
 Purpose:
 
-* List/search patients
-* View patient details
-* Create patients
-* Update patient data
+- List/search patients
+- View patient details
+- Create patients
+- Update patient data
 
 ---
 
 ### Doctors
 
 ```text
-GET    /doctors
-GET    /doctors/<id>
-GET    /doctors/<id>/schedule
+GET    /api/doctors
+GET    /api/doctors/<id>
+GET    /api/doctors/<id>/schedule
+```
+
+Legacy equivalents:
+
+```text
+/doctors
+/doctors/<id>
+/doctors/<id>/schedule
 ```
 
 Purpose:
 
-* List doctors
-* Filter doctors by specialty
-* View doctor schedule
+- List doctors
+- Filter doctors by specialty
+- View doctor details
+- View doctor schedule
+
+Test examples:
+
+```text
+http://127.0.0.1:8000/api/doctors
+http://127.0.0.1:8000/api/doctors/1
+http://127.0.0.1:8000/api/doctors/999
+```
 
 ---
 
 ### Departments
 
 ```text
-GET    /departments
+GET    /api/departments
+```
+
+Legacy equivalent:
+
+```text
+/departments
 ```
 
 Purpose:
 
-* List all departments
+- List all departments
+
+Test example:
+
+```text
+http://127.0.0.1:8000/api/departments
+```
 
 ---
 
 ### Appointments
 
 ```text
-GET    /appointments
-POST   /appointments
-PUT    /appointments/<id>/cancel
-PUT    /appointments/<id>/complete
+GET    /api/appointments
+POST   /api/appointments
+PUT    /api/appointments/<id>/cancel
+PUT    /api/appointments/<id>/complete
+```
+
+Legacy equivalents:
+
+```text
+/appointments
+/appointments/<id>/cancel
+/appointments/<id>/complete
 ```
 
 Purpose:
 
-* List appointments
-* Book appointments
-* Cancel appointments
-* Mark appointments as completed
+- List appointments
+- Book appointments
+- Cancel appointments
+- Mark appointments as completed
 
 ---
 
 ### Treatments
 
 ```text
-GET    /patients/<id>/history
-POST   /treatments
+GET    /api/patients/<id>/history
+POST   /api/treatments
+```
+
+Legacy equivalents:
+
+```text
+/patients/<id>/history
+/treatments
 ```
 
 Purpose:
 
-* View patient history
-* Add treatment records
+- View patient history
+- Add treatment records
 
 ---
 
 ### Analytics
 
 ```text
-GET    /analytics/busiest-doctor
-GET    /analytics/monthly-appointments
-GET    /analytics/department-load
+GET    /api/analytics/busiest-doctor
+GET    /api/analytics/monthly-appointments
+GET    /api/analytics/department-load
+```
+
+Legacy equivalents:
+
+```text
+/analytics/busiest-doctor
+/analytics/monthly-appointments
+/analytics/department-load
 ```
 
 Purpose:
 
-* Find busiest doctor
-* Get monthly appointment statistics
-* Show department workload
+- Find busiest doctor
+- Get monthly appointment statistics
+- Show department workload
 
 ---
 
 ### Agent
 
 ```text
-POST   /agent/chat
-GET    /agent/history
+POST   /api/agent/chat
+GET    /api/agent/history
+```
+
+Legacy equivalents:
+
+```text
+/agent/chat
+/agent/history
 ```
 
 Purpose:
 
-* Send a message to the AI Agent
-* Read conversation history
+- Send a free-text message to the AI Agent
+- Read conversation history
 
 ---
 
@@ -601,11 +899,11 @@ Step 3: book_appointment
 ### Example response
 
 ```text
-Booked appointment for Sarah Cohen with Dr. Amit Patel (Cardiology) on 2026-06-28 09:00.
+Booked appointment for Sarah Cohen with Dr. Amit Patel (Cardiology) on 2026-06-30 10:00.
 Appointment ID: 22
 ```
 
-### Example tools_called output
+### Example tools-called output
 
 ```json
 {
@@ -628,7 +926,7 @@ Appointment ID: 22
     {
       "name": "book_appointment",
       "args": {
-        "datetime": "2026-06-28T09:00:00",
+        "datetime": "2026-06-30T10:00:00",
         "doctor_id": 1,
         "patient_id": 1
       },
@@ -727,91 +1025,201 @@ tools_called includes:
 ### List doctors
 
 ```powershell
-curl.exe http://localhost:8000/doctors
+curl.exe http://localhost:8000/api/doctors
+```
+
+### Doctor details
+
+```powershell
+curl.exe http://localhost:8000/api/doctors/1
+```
+
+### Invalid doctor
+
+```powershell
+curl.exe http://localhost:8000/api/doctors/999
+```
+
+Expected:
+
+```json
+{
+  "error": "not_found",
+  "message": "Doctor was not found."
+}
 ```
 
 ### List cardiologists
 
 ```powershell
-curl.exe "http://localhost:8000/doctors?specialty=Cardiology"
+curl.exe "http://localhost:8000/api/doctors?specialty=Cardiology"
 ```
 
 ### List departments
 
 ```powershell
-curl.exe http://localhost:8000/departments
+curl.exe http://localhost:8000/api/departments
 ```
 
 ### Agent chat
 
 ```powershell
-curl.exe -i -X POST "http://localhost:8000/agent/chat" -H "Content-Type: application/json" -d "{\"message\":\"Who is the busiest doctor?\",\"session_id\":\"demo\"}"
+curl.exe -i -X POST "http://localhost:8000/api/agent/chat" -H "Content-Type: application/json" -d "{\"message\":\"Who is the busiest doctor?\",\"session_id\":\"demo\"}"
 ```
 
 ---
 
-## Demo Script for Lecturer
+## Final Demo Test Flow
 
-A recommended demonstration flow:
+Use this order during the lecturer demo.
 
-### 1. Start Docker
-
-```powershell
-docker compose up --build
-```
-
-### 2. Seed the database
+### 1. Start Docker database
 
 ```powershell
-docker compose exec backend python -m backend.db.seed
+docker compose up -d
 ```
 
-### 3. Open the chat UI
+### 2. Run backend
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m backend.app
+```
+
+### 3. Run frontend
+
+```powershell
+cd frontend
+npm start
+```
+
+### 4. Open the frontend
 
 ```text
-http://localhost:8000/
+http://localhost:3000
 ```
 
-### 4. Ask a free-text question
+Make sure the UI shows:
 
 ```text
-What can you help me with?
+Gemini Connected
+SSE Enabled
 ```
 
-Expected:
+---
 
-```text
-Gemini responds with a natural explanation.
-```
+### 5. Required multi-tool Agent flow
 
-### 5. Ask an analytics question
-
-```text
-Who is the busiest doctor?
-```
-
-Expected:
-
-```text
-The Agent calls busiest_doctor.
-```
-
-### 6. Ask a multi-step booking question
+Ask:
 
 ```text
 Book Sarah Cohen with a cardiologist next week
 ```
 
-Expected:
+Expected tool workflow:
 
 ```text
-The Agent calls:
 search_patient → available_slots → book_appointment
 ```
 
-### 7. Show tools_called in the API response
+Expected result:
 
-This proves the Agent is not only chatting, but also performing structured tool calls.
+```text
+The Agent books an appointment and returns the appointment ID.
+```
+
+---
+
+### 6. Analytics workflow
+
+Ask:
+
+```text
+Who is the busiest doctor next week?
+```
+
+Expected tool:
+
+```text
+busiest_doctor
+```
+
+---
+
+### 7. Doctor schedule workflow
+
+Ask:
+
+```text
+Show doctor 1 schedule this week
+```
+
+Expected tool:
+
+```text
+doctor_schedule
+```
+
+---
+
+### 8. Availability workflow
+
+Ask:
+
+```text
+Are there cardiology slots tomorrow?
+```
+
+Expected tool:
+
+```text
+available_slots
+```
+
+---
+
+### 9. Department list workflow
+
+Ask:
+
+```text
+Show departments
+```
+
+Expected tool:
+
+```text
+list_departments
+```
+
+---
+
+### 10. Department analytics workflow
+
+Ask:
+
+```text
+department load
+```
+
+Expected tool:
+
+```text
+department_load
+```
+
+---
+
+### 11. Show API endpoint proof
+
+Open:
+
+```text
+http://127.0.0.1:8000/api/doctors
+http://127.0.0.1:8000/api/departments
+```
+
+This proves the Flask API and PostgreSQL database are working.
 
 ---
 
@@ -841,19 +1249,33 @@ Default password:
 password
 ```
 
+After a clean database reset, seeded doctor IDs are usually:
+
+```text
+1–8
+```
+
+Recommended demo doctor:
+
+```text
+Doctor ID 1: Amit Patel
+```
+
 ---
 
 ## Troubleshooting
 
-| Problem                        | Solution                                                           |
-| ------------------------------ | ------------------------------------------------------------------ |
-| Docker does not start          | Make sure Docker Desktop is running                                |
-| Database connection error      | Run `docker compose up --build` and wait for database health check |
-| `ModuleNotFoundError: backend` | Run commands from the project root                                 |
-| Gemini returns mock message    | Make sure `GEMINI_API_KEY` exists in `.env`                        |
-| Gemini returns 403             | Create a new Gemini API key/project and replace the key in `.env`  |
-| `curl` cannot open JSON file   | Recreate the file inside `manual-tests/`                           |
-| Port 8000 already in use       | Stop the process using port 8000 or change the port mapping        |
+| Problem | Solution |
+|---|---|
+| Docker does not start | Make sure Docker Desktop is running |
+| Database connection error | Run `docker compose up -d` and wait for the database to start |
+| `ModuleNotFoundError: backend` | Run backend commands from the project root |
+| Gemini returns mock message | Make sure `GEMINI_API_KEY` exists in `.env` |
+| Gemini returns 403 | Create a new Gemini API key/project and replace the key in `.env` |
+| `curl` cannot open JSON file | Recreate the file inside `manual-tests/` |
+| Port 8000 already in use | Stop the process using port 8000 or change the port mapping |
+| `psycopg2-binary` install fails | Use Python 3.12 and `psycopg2-binary==2.9.12` |
+| `npm run dev` fails | This frontend uses `npm start`, not `npm run dev` |
 
 ---
 
@@ -873,23 +1295,29 @@ password
 ✅ Mock fallback for development
 ✅ Docker Compose setup
 ✅ React + TypeScript frontend bonus
+✅ SSE workflow trace
 ✅ Layered architecture
 ✅ README with setup and demo instructions
+✅ Database schema and ERD-style documentation
 ```
 
 ---
 
-## Important Submission Notes
+## Final Submission Cleanup
 
-Before submitting:
+Before creating the final ZIP, remove files and folders that should not be submitted.
+
+Do not include:
 
 ```text
-Do not include .env
-Do not include real API keys
-Do not include node_modules
-Do not include .venv
-Do not include __pycache__
-Do not include .git in the final submission zip unless required
+.env
+.venv
+node_modules
+.git
+.idea
+__pycache__
+frontend/build
+dist
 ```
 
 Safe to include:
@@ -903,6 +1331,8 @@ frontend/
 manual-tests/
 docs/
 ```
+
+A clean ZIP should contain the source code and documentation only, not local environments or generated dependency folders.
 
 ---
 
