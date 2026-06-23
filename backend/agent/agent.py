@@ -8,6 +8,7 @@ from backend.agent.message_parser import (
     choose_patient_match,
     extract_date_range_from_message,
     extract_first_number,
+    extract_month_year_from_message,
     extract_name_from_message,
     extract_patient_history_query,
     extract_specialty_from_message,
@@ -296,17 +297,32 @@ class Agent:
             )
 
         if "busiest doctor" in message_lower or "most appointments" in message_lower:
+            args = {}
+            date_range = extract_date_range_from_message(message, default=None)
+
+            if date_range:
+                args["date_range"] = date_range
+
             return self._run_tool_action(
                 action="busiest_doctor",
-                args={},
+                args=args,
                 message=message,
                 session_id=session_id,
             )
 
         if "appointments this month" in message_lower or "monthly appointments" in message_lower:
+            month, year = extract_month_year_from_message(message)
+            args = {}
+
+            if month:
+                args["month"] = month
+
+            if year:
+                args["year"] = year
+
             return self._run_tool_action(
                 action="monthly_appointments",
-                args={},
+                args=args,
                 message=message,
                 session_id=session_id,
             )
@@ -335,9 +351,18 @@ class Agent:
                 reply = "Please provide the doctor ID to show the schedule."
                 return self._finish(session_id, reply, tools_called)
 
+            args = {
+                "doctor_id": doctor_id,
+            }
+
+            date_range = extract_date_range_from_message(message, default=None)
+
+            if date_range:
+                args["date_range"] = date_range
+
             return self._run_tool_action(
                 action="doctor_schedule",
-                args={"doctor_id": doctor_id},
+                args=args,
                 message=message,
                 session_id=session_id,
             )

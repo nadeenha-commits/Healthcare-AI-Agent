@@ -10,6 +10,7 @@ ALLOWED_APPOINTMENT_STATUSES = {"scheduled", "cancelled", "completed"}
 def _clean_string(value):
     if value is None:
         return None
+
     value = str(value).strip()
     return value if value else None
 
@@ -20,13 +21,13 @@ def _parse_positive_int(value, field_name):
     except (TypeError, ValueError):
         return None, {
             "error": f"invalid_{field_name}",
-            "message": f"{field_name} must be a positive integer."
+            "message": f"{field_name} must be a positive integer.",
         }
 
     if number <= 0:
         return None, {
             "error": f"invalid_{field_name}",
-            "message": f"{field_name} must be greater than 0."
+            "message": f"{field_name} must be greater than 0.",
         }
 
     return number, None
@@ -38,7 +39,7 @@ def _parse_datetime(value):
     if not value:
         return None, {
             "error": "invalid_datetime",
-            "message": "appointment_datetime is required."
+            "message": "appointment_datetime is required.",
         }
 
     try:
@@ -47,7 +48,10 @@ def _parse_datetime(value):
     except ValueError:
         return None, {
             "error": "invalid_datetime",
-            "message": "appointment_datetime must be a valid ISO datetime, for example 2026-06-25T10:00:00."
+            "message": (
+                "appointment_datetime must be a valid ISO datetime, "
+                "for example 2026-06-25T10:00:00."
+            ),
         }
 
     return parsed, None
@@ -71,10 +75,11 @@ def list_appointments(args):
     if status and status not in ALLOWED_APPOINTMENT_STATUSES:
         return {
             "error": "invalid_status",
-            "message": "status must be one of: scheduled, cancelled, completed."
+            "message": "status must be one of: scheduled, cancelled, completed.",
         }
 
     db = SessionLocal()
+
     try:
         qry = db.query(Appointment)
 
@@ -115,19 +120,19 @@ def create_appointment(data):
     if patient_id_raw in (None, ""):
         return {
             "error": "patient_id_required",
-            "message": "patient_id is required."
+            "message": "patient_id is required.",
         }
 
     if doctor_id_raw in (None, ""):
         return {
             "error": "doctor_id_required",
-            "message": "doctor_id is required."
+            "message": "doctor_id is required.",
         }
 
     if datetime_raw in (None, ""):
         return {
             "error": "appointment_datetime_required",
-            "message": "appointment_datetime is required."
+            "message": "appointment_datetime is required.",
         }
 
     patient_id, patient_id_error = _parse_positive_int(patient_id_raw, "patient_id")
@@ -145,10 +150,11 @@ def create_appointment(data):
     if dt_obj < datetime.utcnow():
         return {
             "error": "appointment_datetime_must_be_future",
-            "message": "appointment_datetime must be in the future."
+            "message": "appointment_datetime must be in the future.",
         }
 
     db = SessionLocal()
+
     try:
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
         doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
@@ -156,13 +162,13 @@ def create_appointment(data):
         if not patient:
             return {
                 "error": "patient_not_found",
-                "message": "No patient exists with this patient_id."
+                "message": "No patient exists with this patient_id.",
             }
 
         if not doctor:
             return {
                 "error": "doctor_not_found",
-                "message": "No doctor exists with this doctor_id."
+                "message": "No doctor exists with this doctor_id.",
             }
 
         existing_same_doctor_slot = (
@@ -226,20 +232,29 @@ def create_appointment(data):
 
 
 def cancel_appointment_service(appointment_id):
+    appointment_id, appointment_id_error = _parse_positive_int(
+        appointment_id,
+        "appointment_id",
+    )
+
+    if appointment_id_error:
+        return appointment_id_error
+
     db = SessionLocal()
+
     try:
         appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
 
         if not appointment:
             return {
                 "error": "not_found",
-                "message": "Appointment was not found."
+                "message": "Appointment was not found.",
             }
 
         if appointment.status == "completed":
             return {
                 "error": "appointment_already_completed",
-                "message": "Completed appointments cannot be cancelled."
+                "message": "Completed appointments cannot be cancelled.",
             }
 
         appointment.status = "cancelled"
@@ -261,20 +276,29 @@ def cancel_appointment_service(appointment_id):
 
 
 def complete_appointment_service(appointment_id):
+    appointment_id, appointment_id_error = _parse_positive_int(
+        appointment_id,
+        "appointment_id",
+    )
+
+    if appointment_id_error:
+        return appointment_id_error
+
     db = SessionLocal()
+
     try:
         appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
 
         if not appointment:
             return {
                 "error": "not_found",
-                "message": "Appointment was not found."
+                "message": "Appointment was not found.",
             }
 
         if appointment.status == "cancelled":
             return {
                 "error": "appointment_cancelled",
-                "message": "Cancelled appointments cannot be completed."
+                "message": "Cancelled appointments cannot be completed.",
             }
 
         appointment.status = "completed"
@@ -308,7 +332,7 @@ def get_doctor_schedule(doctor_id, start=None, end=None):
         if start_error:
             return {
                 "error": "invalid_start",
-                "message": "start must be a valid ISO datetime."
+                "message": "start must be a valid ISO datetime.",
             }
 
     if end:
@@ -316,23 +340,24 @@ def get_doctor_schedule(doctor_id, start=None, end=None):
         if end_error:
             return {
                 "error": "invalid_end",
-                "message": "end must be a valid ISO datetime."
+                "message": "end must be a valid ISO datetime.",
             }
 
     if start_dt and end_dt and start_dt > end_dt:
         return {
             "error": "invalid_date_range",
-            "message": "start must be before end."
+            "message": "start must be before end.",
         }
 
     db = SessionLocal()
+
     try:
         doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
 
         if not doctor:
             return {
                 "error": "doctor_not_found",
-                "message": "No doctor exists with this doctor_id."
+                "message": "No doctor exists with this doctor_id.",
             }
 
         qry = db.query(Appointment).filter(Appointment.doctor_id == doctor_id)
@@ -369,6 +394,7 @@ def get_doctor_schedule(doctor_id, start=None, end=None):
 
 def list_doctors_service(specialty=None):
     db = SessionLocal()
+
     try:
         qry = db.query(Doctor)
 
@@ -377,7 +403,7 @@ def list_doctors_service(specialty=None):
         if specialty:
             qry = qry.filter(Doctor.specialty.ilike(f"%{specialty}%"))
 
-        doctors = qry.all()
+        doctors = qry.order_by(Doctor.id).all()
 
         return [
             {
@@ -394,10 +420,37 @@ def list_doctors_service(specialty=None):
         db.close()
 
 
+def get_doctor_by_id_service(doctor_id):
+    doctor_id, doctor_id_error = _parse_positive_int(doctor_id, "doctor_id")
+
+    if doctor_id_error:
+        return doctor_id_error
+
+    db = SessionLocal()
+
+    try:
+        doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
+
+        if not doctor:
+            return None
+
+        return {
+            "id": doctor.id,
+            "full_name": doctor.full_name,
+            "specialty": doctor.specialty,
+            "department_id": doctor.department_id,
+            "department_name": doctor.department.name if doctor.department else None,
+        }
+
+    finally:
+        db.close()
+
+
 def list_departments():
     db = SessionLocal()
+
     try:
-        departments = db.query(Department).all()
+        departments = db.query(Department).order_by(Department.id).all()
 
         return [
             {
@@ -418,6 +471,7 @@ def get_patient_history(patient_id):
         return patient_id_error
 
     db = SessionLocal()
+
     try:
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
 
@@ -473,19 +527,19 @@ def add_treatment_service(data):
     if patient_id_raw in (None, ""):
         return {
             "error": "patient_id_required",
-            "message": "patient_id is required."
+            "message": "patient_id is required.",
         }
 
     if doctor_id_raw in (None, ""):
         return {
             "error": "doctor_id_required",
-            "message": "doctor_id is required."
+            "message": "doctor_id is required.",
         }
 
     if not diagnosis:
         return {
             "error": "diagnosis_required",
-            "message": "diagnosis is required."
+            "message": "diagnosis is required.",
         }
 
     patient_id, patient_id_error = _parse_positive_int(patient_id_raw, "patient_id")
@@ -497,6 +551,7 @@ def add_treatment_service(data):
         return doctor_id_error
 
     db = SessionLocal()
+
     try:
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
         doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
@@ -504,13 +559,13 @@ def add_treatment_service(data):
         if not patient:
             return {
                 "error": "patient_not_found",
-                "message": "No patient exists with this patient_id."
+                "message": "No patient exists with this patient_id.",
             }
 
         if not doctor:
             return {
                 "error": "doctor_not_found",
-                "message": "No doctor exists with this doctor_id."
+                "message": "No doctor exists with this doctor_id.",
             }
 
         treatment = Treatment(
@@ -535,4 +590,4 @@ def add_treatment_service(data):
         }
 
     finally:
-        db.close()
+        db.close()  

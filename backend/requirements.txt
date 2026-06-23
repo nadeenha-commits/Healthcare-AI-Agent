@@ -1,6 +1,9 @@
+# Use Python 3.12.x for this project.
+# Python 3.14 is too new for this dependency set on Windows.
+
 Flask==3.0.0
 SQLAlchemy==2.0.23
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.12
 python-dotenv==1.0.0
 passlib==1.7.4
 bcrypt==4.0.1

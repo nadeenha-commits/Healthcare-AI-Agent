@@ -233,11 +233,33 @@ def add_treatment(patient_id, doctor_id, diagnosis, treatment_plan):
     })
 
 
-def busiest_doctor(start_date=None, end_date=None):
+def busiest_doctor(start_date=None, end_date=None, date_range=None):
+    """
+    Supports both exact API filters and natural-language date filters from the Agent.
+
+    Examples:
+    - busiest_doctor(date_range="next week")
+    - busiest_doctor(date_range="this week")
+    - busiest_doctor(start_date="2026-06-01", end_date="2026-06-08")
+    """
+    if date_range and not start_date and not end_date:
+        start_dt, end_dt = _parse_date_window(date_range)
+        start_date = start_dt.isoformat()
+        end_date = end_dt.isoformat()
+
     return busiest_doctor_service(start_date, end_date)
 
 
 def monthly_appointments(month=None, year=None):
+    """
+    Converts month/year arguments from Agent JSON into integers before calling the service.
+    """
+    if month is not None:
+        month = int(month)
+
+    if year is not None:
+        year = int(year)
+
     return monthly_appointments_service(month, year)
 
 

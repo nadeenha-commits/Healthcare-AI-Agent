@@ -28,6 +28,9 @@ def handle_registered_tool_action(
             "tools_called": tools_called,
         }
 
+    if not isinstance(payload, dict):
+        return finish("I could not understand the tool request.")
+
     action = payload.get("action")
     args = payload.get("args") or {}
 
@@ -37,7 +40,13 @@ def handle_registered_tool_action(
     action = _normalize_action_name(action)
     args = _normalize_tool_args(action, args)
 
-    result = run_registered_tool(action, args)
+    try:
+        result = run_registered_tool(action, args)
+    except Exception as exc:
+        result = {
+            "error": "tool_execution_error",
+            "message": str(exc),
+        }
 
     tools_called.append({
         "name": action,
@@ -50,10 +59,31 @@ def handle_registered_tool_action(
 
 
 def _normalize_action_name(action):
-    action = str(action).strip()
+    action = str(action or "").strip()
 
     action_aliases = {
         "department_load_tool": "department_load",
+        "get_department_load": "department_load",
+        "show_department_load": "department_load",
+
+        "get_available_slots": "available_slots",
+        "find_available_slots": "available_slots",
+        "available_appointments": "available_slots",
+
+        "get_doctor_schedule": "doctor_schedule",
+        "show_doctor_schedule": "doctor_schedule",
+
+        "find_patient": "search_patient",
+        "patient_search": "search_patient",
+
+        "get_patient_history": "patient_history",
+        "show_patient_history": "patient_history",
+
+        "get_busiest_doctor": "busiest_doctor",
+        "most_appointments": "busiest_doctor",
+
+        "appointments_monthly": "monthly_appointments",
+        "get_monthly_appointments": "monthly_appointments",
     }
 
     return action_aliases.get(action, action)
@@ -65,24 +95,53 @@ def _normalize_tool_args(action, args):
 
     normalized = dict(args)
 
+    # Gemini may return "datetime", but the Python tool expects "dt_iso".
     if action == "book_appointment" and "datetime" in normalized:
         normalized["dt_iso"] = normalized.pop("datetime")
 
+    # Gemini may return date_range for available_slots, while the tool expects date.
+    if action == "available_slots" and "date_range" in normalized and "date" not in normalized:
+        normalized["date"] = normalized.pop("date_range")
+
+    # Department load does not need arguments.
     if action == "department_load":
         return {}
 
-    return normalized
+    # Convert numeric values safely.
+    for key in ["patient_id", "doctor_id", "appointment_id", "month", "year"]:
+        if key in normalized and normalized[key] is not None:
+            normalized[key] = _to_int_or_original(normalized[key])
+
+    # Remove empty optional values so tools can use their defaults.
+    cleaned = {}
+
+    for key, value in normalized.items():
+        if value == "":
+            continue
+
+        cleaned[key] = value
+
+    return cleaned
+
+
+def _to_int_or_original(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
 
 
 def _format_registered_tool_reply(action, result):
     if isinstance(result, dict) and "error" in result:
         message = result.get("message") or result.get("error")
-        available_tools = ", ".join(list_registered_tools())
 
-        return (
-            f"Tool execution failed: {message}\n"
-            f"Available tools: {available_tools}"
-        )
+        if action == "doctor_schedule":
+            return (
+                f"I could not find that doctor. "
+                f"Please check the doctor ID or ask me to list doctors."
+            )
+
+        return f"I could not complete the request: {message}"
 
     if action == "search_patient":
         return _format_search_patient_result(result)
@@ -139,6 +198,7 @@ def _format_search_patient_result(result):
     for patient in result:
         lines.append(
             f"• {patient.get('full_name')} | "
+            f"ID: {patient.get('id')} | "
             f"Age: {patient.get('age')} | "
             f"Phone: {patient.get('phone')}"
         )
@@ -155,6 +215,7 @@ def _format_list_doctors_result(result):
     for doctor in result:
         lines.append(
             f"• Dr. {doctor.get('full_name')} | "
+            f"ID: {doctor.get('id')} | "
             f"{doctor.get('specialty')} | "
             f"{doctor.get('department_name')}"
         )
@@ -197,6 +258,7 @@ def _format_busiest_doctor_result(result):
         result.get("appointments")
         or result.get("appointment_count")
         or result.get("count")
+        or result.get("total")
         or 0
     )
 
@@ -215,6 +277,12 @@ def _format_monthly_appointments_result(result):
         or 0
     )
 
+    month = result.get("month")
+    year = result.get("year")
+
+    if month and year:
+        return f"There are {count} appointments in {month}/{year}."
+
     return f"There are {count} appointments."
 
 
@@ -229,6 +297,9 @@ def _format_department_load_result(result):
             or result.get("data")
             or []
         )
+
+    if not result:
+        return "No department load data found."
 
     lines = ["Department load:"]
 

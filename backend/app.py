@@ -22,7 +22,7 @@ def create_app():
     app = Flask(
         __name__,
         static_folder=os.path.join(backend_dir, "static"),
-        template_folder=os.path.join(backend_dir, "static")
+        template_folder=os.path.join(backend_dir, "static"),
     )
 
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev_secret")
@@ -30,6 +30,16 @@ def create_app():
 
     init_db(app)
 
+    # ------------------------------------------------------------------
+    # Legacy routes
+    # These keep the current frontend working.
+    # Examples:
+    # /auth
+    # /patients
+    # /doctors
+    # /appointments
+    # /agent
+    # ------------------------------------------------------------------
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(patient_bp, url_prefix="/patients")
     app.register_blueprint(doctor_bp, url_prefix="/doctors")
@@ -43,6 +53,38 @@ def create_app():
     app.register_blueprint(analytics_bp, url_prefix="/analytics")
     app.register_blueprint(agent_bp, url_prefix="/agent")
     app.register_blueprint(department_bp, url_prefix="/departments")
+
+    # ------------------------------------------------------------------
+    # API aliases
+    # These add clean /api/... endpoints for README/demo/API testing.
+    # Examples:
+    # /api/auth
+    # /api/patients
+    # /api/doctors
+    # /api/appointments
+    # /api/agent
+    # ------------------------------------------------------------------
+    app.register_blueprint(auth_bp, url_prefix="/api/auth", name="api_auth")
+    app.register_blueprint(patient_bp, url_prefix="/api/patients", name="api_patients")
+    app.register_blueprint(doctor_bp, url_prefix="/api/doctors", name="api_doctors")
+    app.register_blueprint(
+        appointment_bp,
+        url_prefix="/api/appointments",
+        name="api_appointments",
+    )
+
+    # Creates:
+    # GET /api/patients/<patient_id>/history
+    # POST /api/treatments
+    app.register_blueprint(treatment_bp, url_prefix="/api", name="api_treatments")
+
+    app.register_blueprint(analytics_bp, url_prefix="/api/analytics", name="api_analytics")
+    app.register_blueprint(agent_bp, url_prefix="/api/agent", name="api_agent")
+    app.register_blueprint(
+        department_bp,
+        url_prefix="/api/departments",
+        name="api_departments",
+    )
 
     @app.route("/")
     def index():

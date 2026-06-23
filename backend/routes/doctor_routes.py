@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
 
 from backend.services.appointment_service import (
+    get_doctor_by_id_service,
     get_doctor_schedule,
     list_doctors_service,
 )
@@ -18,13 +19,18 @@ def doctors_list():
 
 @doctor_bp.route("/<int:doctor_id>", methods=["GET"])
 def doctor_detail(doctor_id):
-    doctors = list_doctors_service()
+    doctor = get_doctor_by_id_service(doctor_id)
 
-    for doctor in doctors:
-        if doctor["id"] == doctor_id:
-            return jsonify(doctor), 200
+    if doctor is None:
+        return jsonify({
+            "error": "not_found",
+            "message": "Doctor was not found."
+        }), 404
 
-    return jsonify({"error": "not_found"}), 404
+    if isinstance(doctor, dict) and "error" in doctor:
+        return jsonify(doctor), 400
+
+    return jsonify(doctor), 200
 
 
 @doctor_bp.route("/<int:doctor_id>/schedule", methods=["GET"])
