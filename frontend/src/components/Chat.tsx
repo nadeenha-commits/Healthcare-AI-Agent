@@ -1,17 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api, ToolCall } from '../api';
+import { api, ActivityStep, AuthUser, ToolCall } from '../api';
+import { AuthPanel } from './AuthPanel';
 
 interface Message {
   type: 'user' | 'assistant';
   text: string;
   toolsCalled?: ToolCall[];
   timestamp: Date;
-}
-
-interface ActivityStep {
-  label: string;
-  status: 'done' | 'active' | 'failed';
-  detail?: string;
 }
 
 interface ActivityEntry {
@@ -22,6 +17,7 @@ interface ActivityEntry {
   steps: ActivityStep[];
   toolsCalled: ToolCall[];
   replyPreview?: string;
+  zepEnabled?: boolean;
 }
 
 const quickPrompts = [
@@ -63,30 +59,22 @@ const renderMultilineText = (text: string) => {
   ));
 };
 
-const inferIntent = (messageText: string, tools: ToolCall[]): string => {
-  const text = messageText.toLowerCase();
+const getActivityStatusClass = (status: ActivityEntry['status']): string => {
+  if (status === 'completed') return 'text-bg-success';
+  if (status === 'failed') return 'text-bg-danger';
+  return 'text-bg-primary';
+};
 
-  if (tools.some((tool) => tool.name === 'book_appointment')) {
-    return 'Detected an appointment booking request.';
-  }
+const getStepDotClass = (status: ActivityStep['status']): string => {
+  if (status === 'done') return 'bg-success';
+  if (status === 'failed') return 'bg-danger';
+  return 'bg-primary';
+};
 
-  if (tools.some((tool) => tool.name === 'busiest_doctor')) {
-    return 'Detected an analytics request about doctor workload.';
-  }
-
-  if (tools.some((tool) => tool.name === 'department_load')) {
-    return 'Detected an analytics request about department load.';
-  }
-
-  if (tools.some((tool) => tool.name === 'search_patient')) {
-    return 'Detected a patient lookup request.';
-  }
-
-  if (text.includes('help')) {
-    return 'Handled as a general capability question.';
-  }
-
-  return 'Analyzed the user request and selected the response path.';
+const getStepBadgeClass = (status: ActivityStep['status']): string => {
+  if (status === 'done') return 'text-bg-success';
+  if (status === 'failed') return 'text-bg-danger';
+  return 'text-bg-primary';
 };
 
 export const Chat: React.FC = () => {
@@ -95,6 +83,8 @@ export const Chat: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(`frontend-session-${Date.now()}`);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -109,6 +99,15 @@ export const Chat: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  const updateActivityEntry = (
+    requestId: string,
+    updater: (entry: ActivityEntry) => ActivityEntry
+  ) => {
+    setActivityLogs((previousLogs) =>
+      previousLogs.map((entry) => (entry.id === requestId ? updater(entry) : entry))
+    );
+  };
 
   const sendMessage = async (messageText?: string) => {
     const textToSend = (messageText ?? inputValue).trim();
@@ -131,19 +130,8 @@ export const Chat: React.FC = () => {
       userText: textToSend,
       startedAt,
       status: 'running',
+      steps: [],
       toolsCalled: [],
-      steps: [
-        {
-          label: 'Received request',
-          status: 'done',
-          detail: 'Captured the user message for processing.',
-        },
-        {
-          label: 'Analyzing request',
-          status: 'active',
-          detail: 'Understanding the request and deciding whether tools are needed.',
-        },
-      ],
     };
 
     setMessages((previousMessages) => [...previousMessages, userMessage]);
@@ -152,67 +140,58 @@ export const Chat: React.FC = () => {
     setLoading(true);
 
     try {
-      const response = await api.chat(textToSend, sessionId);
-      const toolsCalled = response.tools_called || [];
+      const response = await api.chatStream(textToSend, sessionId, {
+        onActivity: (step) => {
+          updateActivityEntry(requestId, (entry) => ({
+            ...entry,
+            steps: [...entry.steps, step],
+          }));
+        },
+        onFinal: (finalResponse) => {
+          updateActivityEntry(requestId, (entry) => ({
+            ...entry,
+            status: 'completed',
+            steps: finalResponse.activity_steps || entry.steps,
+            toolsCalled: finalResponse.tools_called || [],
+            replyPreview: finalResponse.reply,
+            zepEnabled: finalResponse.memory?.zep_enabled,
+          }));
+        },
+        onError: (message) => {
+          updateActivityEntry(requestId, (entry) => ({
+            ...entry,
+            status: 'failed',
+            steps: [
+              ...entry.steps,
+              {
+                label: 'SSE connection failed',
+                status: 'failed',
+                detail: message,
+              },
+            ],
+          }));
+        },
+      });
 
       const assistantMessage: Message = {
         type: 'assistant',
         text: response.reply,
-        toolsCalled,
+        toolsCalled: response.tools_called || [],
         timestamp: new Date(),
       };
 
       setMessages((previousMessages) => [...previousMessages, assistantMessage]);
 
-      const completedSteps: ActivityStep[] = [
-        {
-          label: 'Received request',
-          status: 'done',
-          detail: 'Captured the user message for processing.',
-        },
-        {
-          label: 'Analyzed intent',
-          status: 'done',
-          detail: inferIntent(textToSend, toolsCalled),
-        },
-        {
-          label: toolsCalled.length > 0 ? 'Selected tool workflow' : 'Direct response path',
-          status: 'done',
-          detail:
-            toolsCalled.length > 0
-              ? 'This request required structured tool usage.'
-              : 'This request was answered directly without tool calls.',
-        },
-        ...toolsCalled.map((tool): ActivityStep => ({
-          label: `Called ${formatToolName(tool.name)}`,
-          status: 'done',
-          detail:
-            typeof tool.result_count === 'number'
-              ? `Returned ${tool.result_count} result${tool.result_count === 1 ? '' : 's'}.`
-              : 'Tool executed successfully.',
-        })),
-        {
-          label: 'Generated final response',
-          status: 'done',
-          detail: 'Prepared the final answer for the chat UI.',
-        },
-      ];
-
-      setActivityLogs((previousLogs) =>
-        previousLogs.map((entry) =>
-          entry.id === requestId
-            ? {
-                ...entry,
-                status: 'completed',
-                toolsCalled,
-                replyPreview: response.reply,
-                steps: completedSteps,
-              }
-            : entry
-        )
-      );
+      updateActivityEntry(requestId, (entry) => ({
+        ...entry,
+        status: 'completed',
+        steps: response.activity_steps || entry.steps,
+        toolsCalled: response.tools_called || [],
+        replyPreview: response.reply,
+        zepEnabled: response.memory?.zep_enabled,
+      }));
     } catch (error) {
-      console.error('Agent chat error:', error);
+      console.error('Agent SSE chat error:', error);
 
       const errorMessage: Message = {
         type: 'assistant',
@@ -223,28 +202,20 @@ export const Chat: React.FC = () => {
 
       setMessages((previousMessages) => [...previousMessages, errorMessage]);
 
-      setActivityLogs((previousLogs) =>
-        previousLogs.map((entry) =>
-          entry.id === requestId
-            ? {
-                ...entry,
-                status: 'failed',
-                steps: [
-                  {
-                    label: 'Received request',
-                    status: 'done',
-                    detail: 'Captured the user message for processing.',
-                  },
-                  {
-                    label: 'Connection failed',
-                    status: 'failed',
-                    detail: 'Could not reach the backend service.',
-                  },
-                ],
-              }
-            : entry
-        )
-      );
+      updateActivityEntry(requestId, (entry) => ({
+        ...entry,
+        status: 'failed',
+        steps:
+          entry.steps.length > 0
+            ? entry.steps
+            : [
+                {
+                  label: 'Connection failed',
+                  status: 'failed',
+                  detail: 'Could not reach the backend SSE stream.',
+                },
+              ],
+      }));
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -267,146 +238,123 @@ export const Chat: React.FC = () => {
     <main className="bg-white vh-100 overflow-hidden">
       <section className="container-fluid px-0 h-100">
         <div className="row g-0 h-100 overflow-hidden">
-          {/* Left Panel: Agent Activity */}
           <aside className="col-12 col-lg-3 border-end bg-light-subtle d-flex flex-column h-100 overflow-hidden">
-            <div className="border-bottom bg-white px-4 py-3 flex-shrink-0">
-              <div className="d-flex align-items-center gap-2 mb-1">
-                <span className="badge text-bg-primary px-3 py-2 rounded-pill">
-                  Agent Activity
-                </span>
+            <header className="border-bottom bg-white px-3 py-3 flex-shrink-0">
+              <div className="d-flex align-items-center justify-content-between gap-2">
+                <div>
+                  <h2 className="h6 fw-bold text-dark mb-1">Agent Activity</h2>
+                  <p className="small text-secondary mb-0">Live backend SSE workflow trace</p>
+                </div>
 
-                {loading && (
-                  <span className="badge text-bg-warning rounded-pill px-3 py-2">
-                    Running
-                  </span>
-                )}
+                <span className="badge rounded-pill text-bg-primary">SSE</span>
               </div>
+            </header>
 
-              <h2 className="h6 fw-bold mb-1 text-dark">
-                Agent workflow and tool progress
-              </h2>
-
-              <p className="small text-secondary mb-0">
-                This panel shows how the AI Agent handled each request, including tool usage and execution progress.
-              </p>
+            <div className="border-bottom bg-white p-3 flex-shrink-0">
+              <AuthPanel
+                onAuthChange={(user, token) => {
+                  setCurrentUser(user);
+                  setAuthToken(token);
+                }}
+              />
             </div>
 
             <div className="flex-grow-1 overflow-auto p-3">
-              {activityLogs.length === 0 ? (
-                <div className="text-center text-secondary py-5">
-                  <div className="fs-3 mb-2">⚙</div>
-                  <div className="fw-semibold mb-1">No Agent activity yet</div>
-                  <div className="small">
-                    Send a message to see the Agent workflow and tool-calling progress.
-                  </div>
-                </div>
-              ) : (
-                <div className="d-flex flex-column gap-3">
-                  {activityLogs.map((entry) => (
-                    <div key={entry.id} className="card shadow-sm border-0">
-                      <div className="card-body">
-                        <div className="d-flex align-items-start justify-content-between gap-2 mb-2">
-                          <div>
-                            <div className="small text-secondary mb-1">User request</div>
-                            <div className="fw-semibold text-dark">{entry.userText}</div>
-                          </div>
-
-                          <span
-                            className={`badge rounded-pill px-3 py-2 ${
-                              entry.status === 'completed'
-                                ? 'text-bg-success'
-                                : entry.status === 'failed'
-                                  ? 'text-bg-danger'
-                                  : 'text-bg-warning'
-                            }`}
-                          >
-                            {entry.status === 'completed'
-                              ? 'Completed'
-                              : entry.status === 'failed'
-                                ? 'Failed'
-                                : 'Running'}
-                          </span>
-                        </div>
-
-                        <div className="small text-secondary mb-3">
-                          Started at {formatTime(entry.startedAt)}
-                        </div>
-
-                        <div className="d-flex flex-column gap-2">
-                          {entry.steps.map((step, stepIndex) => (
-                            <div key={`${entry.id}-step-${stepIndex}`} className="d-flex gap-2">
-                              <div className="pt-1">
-                                <span
-                                  className={`badge rounded-pill ${
-                                    step.status === 'done'
-                                      ? 'text-bg-success'
-                                      : step.status === 'failed'
-                                        ? 'text-bg-danger'
-                                        : 'text-bg-primary'
-                                  }`}
-                                >
-                                  {step.status === 'done'
-                                    ? '✓'
-                                    : step.status === 'failed'
-                                      ? '!'
-                                      : '…'}
-                                </span>
-                              </div>
-
-                              <div>
-                                <div className="fw-semibold small text-dark">{step.label}</div>
-                                {step.detail && (
-                                  <div className="small text-secondary">{step.detail}</div>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        {entry.toolsCalled.length > 0 && (
-                          <div className="mt-3">
-                            <div className="small text-uppercase fw-bold text-secondary mb-2">
-                              Tools Called
-                            </div>
-
-                            <div className="d-flex flex-wrap gap-2">
-                              {entry.toolsCalled.map((tool, toolIndex) => (
-                                <span
-                                  key={`${entry.id}-tool-${toolIndex}`}
-                                  className="badge rounded-pill bg-white text-primary border border-primary-subtle px-3 py-2 fw-semibold"
-                                  title={JSON.stringify(tool.args || {})}
-                                >
-                                  <span className="me-1">{getToolIcon(tool.name)}</span>
-                                  {formatToolName(tool.name)}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {entry.replyPreview && (
-                          <div className="mt-3">
-                            <div className="small text-uppercase fw-bold text-secondary mb-2">
-                              Final Reply Preview
-                            </div>
-
-                            <div className="small text-dark bg-light rounded-3 p-2 border">
-                              {entry.replyPreview}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+              {activityLogs.length === 0 && (
+                <div className="border rounded-4 bg-white p-3 shadow-sm text-center">
+                  <div className="fs-3 mb-2">◈</div>
+                  <h3 className="h6 fw-bold mb-2">No activity yet</h3>
+                  <p className="small text-secondary mb-0">
+                    Send a message to see the real backend Agent workflow.
+                  </p>
                 </div>
               )}
+
+              <div className="d-flex flex-column gap-3">
+                {activityLogs.map((entry) => (
+                  <article key={entry.id} className="border rounded-4 bg-white shadow-sm overflow-hidden">
+                    <div className="border-bottom p-3">
+                      <div className="d-flex align-items-start justify-content-between gap-2 mb-2">
+                        <div className="text-truncate">
+                          <div className="small text-secondary mb-1">Request</div>
+                          <div className="fw-semibold small text-dark text-truncate" title={entry.userText}>
+                            {entry.userText}
+                          </div>
+                        </div>
+
+                        <span className={`badge rounded-pill ${getActivityStatusClass(entry.status)}`}>
+                          {entry.status}
+                        </span>
+                      </div>
+
+                      <div className="d-flex align-items-center justify-content-between gap-2">
+                        <span className="small text-secondary">{formatTime(entry.startedAt)}</span>
+                        <span className="small text-secondary">
+                          {entry.zepEnabled ? 'Zep on' : 'Zep off'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-3">
+                      {entry.steps.length === 0 && (
+                        <div className="d-flex align-items-center gap-2 text-secondary small">
+                          <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                          Opening SSE stream...
+                        </div>
+                      )}
+
+                      <div className="d-flex flex-column gap-3">
+                        {entry.steps.map((step, stepIndex) => (
+                          <div key={`${entry.id}-step-${stepIndex}`} className="d-flex gap-2">
+                            <div className="pt-1">
+                              <span
+                                className={`d-inline-block rounded-circle ${getStepDotClass(step.status)}`}
+                                style={{ width: '10px', height: '10px' }}
+                              ></span>
+                            </div>
+
+                            <div className="flex-grow-1">
+                              <div className="d-flex align-items-center justify-content-between gap-2 mb-1">
+                                <div className="fw-semibold small text-dark">{step.label}</div>
+                                <span className={`badge rounded-pill ${getStepBadgeClass(step.status)}`}>
+                                  {step.status}
+                                </span>
+                              </div>
+
+                              {step.detail && (
+                                <p className="small text-secondary mb-0 lh-sm">{step.detail}</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {entry.toolsCalled.length > 0 && (
+                        <div className="border-top mt-3 pt-3">
+                          <div className="text-uppercase text-secondary fw-bold small mb-2">Tools</div>
+                          <div className="d-flex flex-wrap gap-2">
+                            {entry.toolsCalled.map((tool, index) => (
+                              <span
+                                key={`${entry.id}-${tool.name}-${index}`}
+                                className="badge rounded-pill text-primary border border-primary-subtle bg-primary-subtle px-2 py-2 fw-semibold"
+                              >
+                                <span className="me-1">{getToolIcon(tool.name)}</span>
+                                {formatToolName(tool.name)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
           </aside>
 
-          {/* Right Panel: Chat */}
           <section className="col-12 col-lg-9 d-flex flex-column bg-white h-100 overflow-hidden">
-            <header className="border-bottom bg-white flex-shrink-0">
-              <div className="d-flex align-items-center justify-content-between gap-3 px-4 py-3">
+            <header className="border-bottom bg-white px-3 px-md-4 py-3 flex-shrink-0">
+              <div className="d-flex align-items-center justify-content-between gap-3">
                 <div className="d-flex align-items-center gap-3">
                   <div
                     className="d-flex align-items-center justify-content-center rounded-4 bg-primary text-white fw-bold shadow-sm"
@@ -423,14 +371,24 @@ export const Chat: React.FC = () => {
                   </div>
                 </div>
 
-                <span className="badge rounded-pill text-bg-success d-none d-md-inline-flex align-items-center gap-2 px-3 py-2">
-                  <span>●</span>
-                  Gemini Connected
-                </span>
+                <div className="d-none d-md-flex align-items-center gap-2">
+                  {currentUser && (
+                    <span className="badge rounded-pill text-bg-light border text-secondary px-3 py-2">
+                      Signed in: {currentUser.full_name}
+                    </span>
+                  )}
+                  {authToken && (
+                    <span className="badge rounded-pill text-bg-light border text-secondary px-3 py-2">
+                      JWT Active
+                    </span>
+                  )}
+                  <span className="badge rounded-pill text-bg-success px-3 py-2">Gemini Connected</span>
+                  <span className="badge rounded-pill text-bg-primary px-3 py-2">SSE Enabled</span>
+                </div>
               </div>
             </header>
 
-            <section className="flex-grow-1 overflow-auto px-3 px-md-4 py-4">
+            <div className="flex-grow-1 overflow-auto px-3 px-md-4 py-4">
               {messages.length === 0 && (
                 <div className="h-100 d-flex align-items-center justify-content-center text-center">
                   <div className="w-100" style={{ maxWidth: '760px' }}>
@@ -456,9 +414,7 @@ export const Chat: React.FC = () => {
                           <button
                             type="button"
                             className="btn btn-light border shadow-sm rounded-4 w-100 text-start p-3"
-                            onClick={() => {
-                              void sendMessage(prompt);
-                            }}
+                            onClick={() => sendMessage(prompt)}
                             disabled={loading}
                           >
                             {prompt}
@@ -475,9 +431,7 @@ export const Chat: React.FC = () => {
                   <article
                     key={`${message.type}-${index}`}
                     className={`d-flex gap-2 ${
-                      message.type === 'user'
-                        ? 'justify-content-end'
-                        : 'justify-content-start'
+                      message.type === 'user' ? 'justify-content-end' : 'justify-content-start'
                     }`}
                   >
                     {message.type === 'assistant' && (
@@ -502,7 +456,7 @@ export const Chat: React.FC = () => {
                             : 'bg-white text-dark shadow-sm'
                         }`}
                       >
-                        <div className="mb-0 small lh-lg text-break">
+                        <div className="mb-0 small lh-lg text-break" style={{ whiteSpace: 'pre-wrap' }}>
                           {renderMultilineText(message.text)}
                         </div>
                       </div>
@@ -519,7 +473,7 @@ export const Chat: React.FC = () => {
                               {message.toolsCalled.map((tool, toolIndex) => (
                                 <span
                                   key={`${tool.name}-${toolIndex}`}
-                                  className="badge rounded-pill bg-light text-primary border border-primary-subtle px-3 py-2 fw-semibold"
+                                  className="badge rounded-pill text-primary border border-primary-subtle bg-primary-subtle px-3 py-2 fw-semibold"
                                   title={JSON.stringify(tool.args || {})}
                                 >
                                   <span className="me-1">{getToolIcon(tool.name)}</span>
@@ -556,28 +510,16 @@ export const Chat: React.FC = () => {
                     </div>
 
                     <div className="rounded-4 px-3 py-3 border bg-white shadow-sm">
-                      <span
-                        className="spinner-grow spinner-grow-sm text-secondary me-1"
-                        role="status"
-                        aria-hidden="true"
-                      ></span>
-                      <span
-                        className="spinner-grow spinner-grow-sm text-secondary me-1"
-                        role="status"
-                        aria-hidden="true"
-                      ></span>
-                      <span
-                        className="spinner-grow spinner-grow-sm text-secondary"
-                        role="status"
-                        aria-hidden="true"
-                      ></span>
+                      <span className="spinner-grow spinner-grow-sm text-secondary me-1" role="status" aria-hidden="true"></span>
+                      <span className="spinner-grow spinner-grow-sm text-secondary me-1" role="status" aria-hidden="true"></span>
+                      <span className="spinner-grow spinner-grow-sm text-secondary" role="status" aria-hidden="true"></span>
                     </div>
                   </article>
                 )}
 
                 <div ref={messagesEndRef} />
               </div>
-            </section>
+            </div>
 
             <footer className="border-top bg-white px-3 px-md-4 py-3 flex-shrink-0">
               <div className="d-flex gap-2 overflow-auto pb-2">
@@ -586,9 +528,7 @@ export const Chat: React.FC = () => {
                     key={prompt}
                     type="button"
                     className="btn btn-outline-secondary btn-sm rounded-pill flex-shrink-0"
-                    onClick={() => {
-                      void sendMessage(prompt);
-                    }}
+                    onClick={() => sendMessage(prompt)}
                     disabled={loading}
                   >
                     {prompt}
@@ -596,10 +536,7 @@ export const Chat: React.FC = () => {
                 ))}
               </div>
 
-              <form
-                className="d-flex align-items-end gap-2 border rounded-4 shadow-sm p-2"
-                onSubmit={handleSubmit}
-              >
+              <form className="d-flex align-items-end gap-2 border rounded-4 shadow-sm p-2" onSubmit={handleSubmit}>
                 <textarea
                   ref={inputRef}
                   value={inputValue}

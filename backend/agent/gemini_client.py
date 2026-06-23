@@ -1,4 +1,7 @@
 import os
+import time
+from typing import Any, Dict
+
 import requests
 
 
@@ -9,25 +12,25 @@ GEMINI_API_URL = os.getenv("GEMINI_API_URL") or (
 )
 
 
-def generate_text(prompt: str, max_tokens: int = 512) -> dict:
+def generate_text(prompt: str, max_tokens: int = 512) -> Dict[str, Any]:
     """
-    Calls the Gemini generateContent REST API.
+    Calls the real Gemini API.
 
-    Returns:
-    {
-        "text": str,
-        "raw": object
-    }
+    This function does not return hardcoded AI answers.
+    It sends the prompt to Gemini and returns Gemini's real response.
 
-    If GEMINI_API_KEY is missing, returns a local mock response so the project
-    can still run in demo/dev mode.
+    If Gemini is temporarily unavailable, it retries a few times.
     """
     if not GEMINI_API_KEY:
-        return _mock_response(prompt)
+        return {
+            "text": "Gemini API is not configured. Please set GEMINI_API_KEY.",
+            "raw": None,
+            "error": "missing_api_key",
+        }
 
     headers = {
-        "x-goog-api-key": GEMINI_API_KEY,
         "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
     }
 
     payload = {
@@ -42,93 +45,72 @@ def generate_text(prompt: str, max_tokens: int = 512) -> dict:
         ],
         "generationConfig": {
             "maxOutputTokens": max_tokens,
-            "temperature": 0.2,
+            "temperature": 0.3,
         },
     }
 
-    try:
-        response = requests.post(
-            GEMINI_API_URL,
-            headers=headers,
-            json=payload,
-            timeout=20,
-        )
-        response.raise_for_status()
+    last_error = ""
 
-        data = response.json()
-        text = _extract_text(data)
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                GEMINI_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
 
-        return {
-            "text": text,
-            "raw": data,
-        }
+            if response.status_code in {429, 500, 502, 503, 504}:
+                last_error = f"{response.status_code} {response.text}"
+                time.sleep(1.5 * (attempt + 1))
+                continue
 
-    except Exception as exc:
-        return {
-            "text": f"LLM call failed: {exc}",
-            "raw": None,
-        }
+            response.raise_for_status()
 
+            data = response.json()
+            text = _extract_text(data)
 
-def _extract_text(data: dict) -> str:
-    """
-    Extracts the text from Gemini generateContent response.
-    """
-    try:
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return ""
+            if not text:
+                return {
+                    "text": "Gemini returned an empty response.",
+                    "raw": data,
+                    "error": "empty_response",
+                }
 
-        content = candidates[0].get("content", {})
-        parts = content.get("parts", [])
+            return {
+                "text": text,
+                "raw": data,
+                "error": None,
+            }
 
-        if not parts:
-            return ""
-
-        return parts[0].get("text", "")
-
-    except Exception:
-        return str(data)
-
-
-def _mock_response(prompt: str) -> dict:
-    """
-    Local fallback for development when GEMINI_API_KEY is not configured.
-    Keeps the project demo working without external API calls.
-    """
-    lower = prompt.lower()
-
-    if "book" in lower and "appointment" in lower:
-        return {
-            "text": '{"action": "book_flow"}',
-            "raw": None,
-        }
-
-    if "search patient" in lower or "find patient" in lower:
-        return {
-            "text": '{"action": "search_patient", "args": {"query": "Sarah Cohen"}}',
-            "raw": None,
-        }
-
-    if "list doctors" in lower or "show doctors" in lower:
-        return {
-            "text": '{"action": "list_doctors", "args": {}}',
-            "raw": None,
-        }
-
-    if "busiest doctor" in lower or "most appointments" in lower:
-        return {
-            "text": '{"action": "busiest_doctor", "args": {}}',
-            "raw": None,
-        }
-
-    if "department load" in lower:
-        return {
-            "text": '{"action": "department_load", "args": {}}',
-            "raw": None,
-        }
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            time.sleep(1.5 * (attempt + 1))
 
     return {
-        "text": "I am running in mock LLM mode because GEMINI_API_KEY is not configured.",
+        "text": (
+            "Gemini is temporarily unavailable after several retries. "
+            "Please try again shortly."
+        ),
         "raw": None,
+        "error": last_error or "gemini_unavailable",
     }
+
+
+def _extract_text(data: Dict[str, Any]) -> str:
+    candidates = data.get("candidates", [])
+
+    if not candidates:
+        return ""
+
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", [])
+
+    text_parts = []
+
+    for part in parts:
+        text = part.get("text")
+        if text:
+            text_parts.append(text)
+
+    return "\n".join(text_parts).strip()

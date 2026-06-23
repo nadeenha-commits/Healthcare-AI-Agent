@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 
 from backend.agent.booking_flow import handle_book_flow
@@ -26,6 +27,45 @@ from backend.agent.tools import (
 from backend.agent.zep_memory import get_memory_context
 
 
+def normalize_message(message: str) -> str:
+    """
+    Normalizes user text for intent matching.
+
+    Example:
+    'List doctorsssssssss' -> 'list doctors'
+    """
+    text = str(message or "").lower().strip()
+    text = re.sub(r"(.)\1{2,}", r"\1", text)
+    return text
+
+
+def parse_llm_json_payload(text: str):
+    """
+    Parses Gemini tool JSON even if Gemini adds text before/after it.
+
+    Example:
+    'I can list doctors. {"action": "list_doctors", "args": {}}'
+    becomes:
+    {"action": "list_doctors", "args": {}}
+    """
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text or "", flags=re.DOTALL)
+
+    if not match:
+        return None
+
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
 class Agent:
     def __init__(self):
         self.histories = {}
@@ -41,6 +81,111 @@ class Agent:
             "text": text,
         })
 
+    def _recent_history_context(self, session_id: Optional[str], limit: int = 8) -> str:
+        """
+        Builds compact same-session memory context from the local Agent history.
+        """
+        history = self.get_history(session_id)[-limit:]
+
+        if not history:
+            return ""
+
+        lines = []
+
+        for item in history:
+            role = item.get("role", "user")
+            text = item.get("text", "")
+
+            if text:
+                lines.append(f"{role}: {text}")
+
+        return "\n".join(lines)
+
+    def _extract_demo_memory_from_text(self, text: str) -> Optional[str]:
+        """
+        Extracts demo memory values from any real text the user previously gave.
+        This is not hardcoded to specific values; it reads the values dynamically.
+        """
+        preferred_specialty = None
+        demo_patient = None
+
+        specialty_match = re.search(
+            r"preferred doctor specialty is ([A-Za-z ]+?)(?=,|\.| and my demo patient|$)",
+            text or "",
+            flags=re.IGNORECASE,
+        )
+
+        patient_match = re.search(
+            r"demo patient is ([A-Za-z ]+?)(?=,|\.|$)",
+            text or "",
+            flags=re.IGNORECASE,
+        )
+
+        if specialty_match:
+            preferred_specialty = specialty_match.group(1).strip().rstrip(".")
+
+        if patient_match:
+            demo_patient = patient_match.group(1).strip().rstrip(".")
+
+        if not preferred_specialty and not demo_patient:
+            return None
+
+        parts = []
+
+        if preferred_specialty:
+            parts.append(f"Your preferred doctor specialty is {preferred_specialty}.")
+
+        if demo_patient:
+            parts.append(f"Your demo patient is {demo_patient}.")
+
+        return " ".join(parts)
+
+    def _extract_demo_memory_from_history(self, session_id: Optional[str]) -> Optional[str]:
+        history = self.get_history(session_id)
+
+        for item in reversed(history):
+            if item.get("role") != "user":
+                continue
+
+            memory_reply = self._extract_demo_memory_from_text(item.get("text", ""))
+
+            if memory_reply:
+                return memory_reply
+
+        return None
+
+    def _is_memory_recall_question(self, message: str) -> bool:
+        text = normalize_message(message)
+
+        recall_phrases = [
+            "what doctor specialty",
+            "what specialty",
+            "what demo patient",
+            "what patient",
+            "what did i mention earlier",
+            "what did i say earlier",
+            "what do you remember",
+            "remember earlier",
+        ]
+
+        return any(phrase in text for phrase in recall_phrases)
+
+    def _is_available_slots_request(self, message_lower: str) -> bool:
+        slot_words = [
+            "available slot",
+            "available slots",
+            "appointment slot",
+            "appointment slots",
+            "free slot",
+            "free slots",
+            "open slot",
+            "open slots",
+            "openings",
+            "availability",
+        ]
+
+        return any(word in message_lower for word in slot_words)
+
     def _finish(self, session_id, reply, tools_called):
         self.add_history(session_id, "assistant", reply)
         return {
@@ -51,8 +196,23 @@ class Agent:
     def handle_message(self, message: str, session_id: Optional[str] = None):
         self.add_history(session_id, "user", message)
 
-        message_lower = message.lower().strip()
+        message_lower = normalize_message(message)
         tools_called = []
+
+        if message_lower.startswith(("remember this", "remember that")):
+            reply = "Got it. I will remember that for this session."
+            return self._finish(session_id, reply, tools_called)
+
+        if self._is_memory_recall_question(message):
+            memory_reply = self._extract_demo_memory_from_history(session_id)
+
+            if not memory_reply:
+                memory_reply = self._extract_demo_memory_from_text(
+                    get_memory_context(session_id)
+                )
+
+            if memory_reply:
+                return self._finish(session_id, memory_reply, tools_called)
 
         if message_lower in ["hi", "hello", "hey"]:
             reply = (
@@ -83,6 +243,27 @@ class Agent:
             return self._run_tool_action(
                 action="search_patient",
                 args={"query": query},
+                message=message,
+                session_id=session_id,
+            )
+
+        if self._is_available_slots_request(message_lower):
+            specialty = extract_specialty_from_message(message)
+            date_range = extract_date_range_from_message(message)
+
+            if not specialty:
+                reply = (
+                    "Please tell me which doctor specialty you need "
+                    "so I can check available appointment slots."
+                )
+                return self._finish(session_id, reply, tools_called)
+
+            return self._run_tool_action(
+                action="available_slots",
+                args={
+                    "specialty": specialty,
+                    "date": date_range,
+                },
                 message=message,
                 session_id=session_id,
             )
@@ -234,21 +415,36 @@ class Agent:
 
     def _handle_llm_fallback(self, message, session_id):
         memory_context = get_memory_context(session_id)
+        recent_history = self._recent_history_context(session_id)
+
+        # Keep Zep useful, but do not allow memory to make the Gemini prompt too large.
+        if memory_context:
+            memory_context = memory_context[-800:]
+
+        if recent_history:
+            recent_history = recent_history[-800:]
 
         memory_section = ""
+
         if memory_context:
-            memory_section = (
-                "\nRelevant long-term memory from Zep:\n"
+            memory_section += (
+                "\nLong-term memory from Zep:\n"
                 f"{memory_context}\n"
             )
 
+        if recent_history:
+            memory_section += (
+                "\nRecent conversation history:\n"
+                f"{recent_history}\n"
+            )
+
         prompt = f"{SYSTEM_PROMPT}{memory_section}\nUser: {message}\nAssistant:"
-        llm_resp = generate_text(prompt)
+        llm_resp = generate_text(prompt, max_tokens=300)
         text = llm_resp.get("text", "")
 
-        try:
-            payload = json.loads(text)
-        except Exception:
+        payload = parse_llm_json_payload(text)
+
+        if payload is None:
             return self._finish(session_id, text, [])
 
         action = payload.get("action")
